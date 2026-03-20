@@ -1,0 +1,28 @@
+name: Tests Unitarios
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install dependencies
+      run: |
+        pip install pytest pytest-cov pandas numpy scikit-learn xgboost joblib boto3
+
+    - name: Run tests
+      run: |
+        pytest tests/unit/ -v
