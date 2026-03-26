@@ -7,6 +7,7 @@ import sys
 import os
 import json
 import pytest
+import importlib.util  # ← AÑADIR ESTA LÍNEA
 from unittest.mock import Mock, patch, MagicMock
 
 file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../lambda/lambda_procesar_salida_glue/lambda_procesar_glue.py'))
