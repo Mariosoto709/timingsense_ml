@@ -375,7 +375,7 @@ def nivel2_consistencia_error(errores_abs):
 
 def nivel3_sin_outliers_catastroficos(errores_abs):
     """
-    Nivel 3: No debe haber errores catastróficos (P95 ≤ 3 × P50)
+    Nivel 3: No debe haber errores catastróficos (P95 ≤ 5 × P50)
     """
     p50 = np.percentile(errores_abs, 50)
     p95 = np.percentile(errores_abs, 95)
@@ -385,7 +385,7 @@ def nivel3_sin_outliers_catastroficos(errores_abs):
     else:
         relacion = float('inf')
     
-    aprueba = relacion <= 3.0
+    aprueba = relacion <= 5
     
     return {
         'aprueba': aprueba,

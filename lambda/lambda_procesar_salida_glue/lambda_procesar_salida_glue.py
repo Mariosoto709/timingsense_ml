@@ -32,11 +32,12 @@ def lambda_handler(event, context):
         # 🟢 MODIFICAR LA CARPETA CON EL GENERATED_AT CORRECTO 🟢
         modelos = contenido.get("modelos", [])
         for modelo in modelos:
-            # Reemplazar la carpeta con la correcta
-            carpeta_correcta = f"{carrera}-{generated_at}"
+            # Usar la carrera del propio modelo, no la del evento
+            carrera_modelo = modelo.get("carrera", carrera)
+            carpeta_correcta = f"{carrera_modelo}-{generated_at}"
             modelo["carpeta_modelo"] = carpeta_correcta
             modelo["data_s3_path"] = f"s3://{BUCKET}/modelos/{carpeta_correcta}/data/"
-            modelo["tabla_generada"] = f"modelo_{carrera.replace('-', '_')}_{generated_at.replace('-', '_')}"
+            modelo["tabla_generada"] = f"modelo_{carrera_modelo.replace('-', '_')}_{generated_at.replace('-', '_')}"
         
         # Devolver en el formato que espera Step Functions
         return {
