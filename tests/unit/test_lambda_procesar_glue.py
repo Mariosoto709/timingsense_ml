@@ -7,30 +7,28 @@ import sys
 import os
 import json
 import pytest
-import importlib.util  # ← AÑADIR ESTA LÍNEA
+import importlib.util
 from unittest.mock import Mock, patch, MagicMock
 
+# =============================================================
+# IMPORTAR LA LAMBDA USANDO IMPORTLIB
+# =============================================================
 file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../lambda/lambda_procesar_salida_glue/lambda_procesar_salida_glue.py'))
 spec = importlib.util.spec_from_file_location("lambda_procesar", file_path)
 lambda_procesar = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lambda_procesar)
 lambda_handler = lambda_procesar.lambda_handler
-s3 = lambda_procesar.s3
 
 
 class TestLambdaProcesarGlue:
     """Pruebas para la Lambda que procesa la salida de Glue"""
     
-    # =============================================================
-    # DATOS DE PRUEBA
-    # =============================================================
-    
     @pytest.fixture
     def mock_s3_client(self):
         """Crea un mock del cliente S3"""
-        with patch('lambda_procesar_salida_glue.s3') as mock_s3:
+        with patch.object(lambda_procesar, 's3') as mock_s3:
             yield mock_s3
-    
+        
     @pytest.fixture
     def sample_salida_glue(self):
         """Datos de ejemplo de salida del job Glue"""
