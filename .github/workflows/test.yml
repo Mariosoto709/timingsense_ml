@@ -33,12 +33,11 @@ jobs:
     - name: Package artifacts
       if: github.ref == 'refs/heads/develop'
       run: |
-        # Empaquetar Lambda lambda_bdd_races
+        # Empaquetar Lambdas
         cd lambdas/lambda_bdd_races
         zip -r ../../lambda-bdd-races.zip .
         cd ../..
         
-        # Empaquetar Lambda lambda_procesar_salida_glue
         cd lambdas/lambda_procesar_salida_glue
         zip -r ../../lambda-procesar-glue.zip .
         cd ../..
@@ -48,7 +47,14 @@ jobs:
         tar -czf ../sagemaker-scripts.tar.gz train_interpolacion.py train_prediccion.py
         cd ..
         
-        # Mostrar archivos creados (para debug)
+        # =============================================================
+        # NUEVO: Empaquetar scripts de Glue (todos juntos)
+        # =============================================================
+        cd glue
+        zip -r ../glue-scripts.zip glue_utils.py athena_utils.py create-training-table.py
+        cd ..
+        
+        # Mostrar archivos creados
         ls -la *.zip *.tar.gz
 
     # =============================================================
@@ -57,15 +63,29 @@ jobs:
     - name: Upload to S3
       if: github.ref == 'refs/heads/develop'
       run: |
-        # Crear carpeta con el commit SHA
+        # Subir Lambdas
         aws s3 cp lambda-bdd-races.zip s3://timingsense-artifacts/builds/${{ github.sha }}/lambda-bdd-races.zip
         aws s3 cp lambda-procesar-glue.zip s3://timingsense-artifacts/builds/${{ github.sha }}/lambda-procesar-glue.zip
+        
+        # Subir scripts SageMaker
         aws s3 cp sagemaker-scripts.tar.gz s3://timingsense-artifacts/builds/${{ github.sha }}/sagemaker-scripts.tar.gz
         
-        # Actualizar carpeta "latest"
+        # =============================================================
+        # NUEVO: Subir scripts de Glue (ZIP completo y archivos sueltos)
+        # =============================================================
+        aws s3 cp glue-scripts.zip s3://timingsense-artifacts/builds/${{ github.sha }}/glue-scripts.zip
+        
+        # También subir archivos sueltos para fácil acceso
+        aws s3 cp glue/glue_utils.py s3://timingsense-scripts/glue/glue_utils.py
+        aws s3 cp glue/athena_utils.py s3://timingsense-scripts/glue/athena_utils.py
+        aws s3 cp glue/create-training-table.py s3://timingsense-scripts/glue/create-training-table.py
+        
+        # Actualizar "latest"
         aws s3 cp lambda-bdd-races.zip s3://timingsense-artifacts/builds/latest/lambda-bdd-races.zip
         aws s3 cp lambda-procesar-glue.zip s3://timingsense-artifacts/builds/latest/lambda-procesar-glue.zip
         aws s3 cp sagemaker-scripts.tar.gz s3://timingsense-artifacts/builds/latest/sagemaker-scripts.tar.gz
+        aws s3 cp glue-scripts.zip s3://timingsense-artifacts/builds/latest/glue-scripts.zip
+        
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
