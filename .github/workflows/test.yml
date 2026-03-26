@@ -1,4 +1,4 @@
-name: Tests Unitarios
+name: Tests Unitarios y Artefactos
 
 on:
   push:
@@ -23,6 +23,49 @@ jobs:
       run: |
         pip install pytest pytest-cov pandas numpy scikit-learn xgboost joblib boto3
 
-    - name: Run tests
+    - name: Run unit tests
       run: |
         pytest tests/unit/ -v
+
+    # =============================================================
+    # EMPAQUETAR ARTEFACTOS (solo para develop)
+    # =============================================================
+    - name: Package artifacts
+      if: github.ref == 'refs/heads/develop'
+      run: |
+        # Empaquetar Lambda lambda_bdd_races
+        cd lambdas/lambda_bdd_races
+        zip -r ../../lambda-bdd-races.zip .
+        cd ../..
+        
+        # Empaquetar Lambda lambda_procesar_salida_glue
+        cd lambdas/lambda_procesar_salida_glue
+        zip -r ../../lambda-procesar-glue.zip .
+        cd ../..
+        
+        # Empaquetar scripts de SageMaker
+        cd sagemaker
+        tar -czf ../sagemaker-scripts.tar.gz train_interpolacion.py train_prediccion.py
+        cd ..
+        
+        # Mostrar archivos creados (para debug)
+        ls -la *.zip *.tar.gz
+
+    # =============================================================
+    # SUBIR ARTEFACTOS A S3 (solo para develop)
+    # =============================================================
+    - name: Upload to S3
+      if: github.ref == 'refs/heads/develop'
+      run: |
+        # Crear carpeta con el commit SHA
+        aws s3 cp lambda-bdd-races.zip s3://timingsense-artifacts/builds/${{ github.sha }}/lambda-bdd-races.zip
+        aws s3 cp lambda-procesar-glue.zip s3://timingsense-artifacts/builds/${{ github.sha }}/lambda-procesar-glue.zip
+        aws s3 cp sagemaker-scripts.tar.gz s3://timingsense-artifacts/builds/${{ github.sha }}/sagemaker-scripts.tar.gz
+        
+        # Actualizar carpeta "latest"
+        aws s3 cp lambda-bdd-races.zip s3://timingsense-artifacts/builds/latest/lambda-bdd-races.zip
+        aws s3 cp lambda-procesar-glue.zip s3://timingsense-artifacts/builds/latest/lambda-procesar-glue.zip
+        aws s3 cp sagemaker-scripts.tar.gz s3://timingsense-artifacts/builds/latest/sagemaker-scripts.tar.gz
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
