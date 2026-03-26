@@ -9,10 +9,12 @@ import json
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
-# Añadir la carpeta de la lambda al path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../lambda/lambda_procesar_salida_glue')))
-
-from lambda_procesar_salida_glue import lambda_handler
+file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../lambda/lambda_procesar_salida_glue/lambda_procesar_glue.py'))
+spec = importlib.util.spec_from_file_location("lambda_procesar", file_path)
+lambda_procesar = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lambda_procesar)
+lambda_handler = lambda_procesar.lambda_handler
+s3 = lambda_procesar.s3
 
 
 class TestLambdaProcesarGlue:

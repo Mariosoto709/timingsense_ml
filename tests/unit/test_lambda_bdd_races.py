@@ -7,11 +7,14 @@ import sys
 import os
 import json
 import pytest
+import importlib.util
+from datetime import datetime
 
-# Añadir la carpeta de la lambda al path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../lambda/lambda_bdd_races')))
-
-from lambda_bdd_races import lambda_handler
+file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../lambda/lambda_bdd_races/lambda_bdd_races.py'))
+spec = importlib.util.spec_from_file_location("lambda_bdd", file_path)
+lambda_bdd = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lambda_bdd)
+lambda_handler = lambda_bdd.lambda_handler
 
 class TestLambdaBDDRaces:
     """Pruebas para la Lambda de configuración de entrenamiento"""
