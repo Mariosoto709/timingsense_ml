@@ -10,7 +10,7 @@ import pytest
 import importlib.util  # ← AÑADIR ESTA LÍNEA
 from unittest.mock import Mock, patch, MagicMock
 
-file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../lambda/lambda_procesar_salida_glue/lambda_procesar_glue.py'))
+file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../lambda/lambda_procesar_salida_glue/lambda_procesar_salida_glue.py'))
 spec = importlib.util.spec_from_file_location("lambda_procesar", file_path)
 lambda_procesar = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lambda_procesar)
