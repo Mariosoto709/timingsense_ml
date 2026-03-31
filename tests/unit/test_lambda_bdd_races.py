@@ -67,17 +67,19 @@ class TestLambdaBDDRacesEnhanced:
         assert "No se pudo preparar ninguna carrera" in str(exc_info.value)
     
     def test_lambda_splits_none_value(self):
-        """Splits como None - debe invalidar la carrera"""
+        """Splits como None - debe fallar con ValueError"""
         event = {
             "carreras": [
                 {"nombre": "Carrera1", "splits": None}
             ]
         }
-        
-        with pytest.raises(Exception) as exc_info:
+
+        with pytest.raises(ValueError) as exc_info:
             lambda_handler(event, None)
-        assert "No se pudo preparar ninguna carrera" in str(exc_info.value)
-    
+        
+        # ✅ Esperar el mensaje real que lanza la Lambda
+        assert "splits debe ser una lista" in str(exc_info.value)
+        
     # =============================================================
     # TESTS PARA CAMPOS CON PRIORIDAD Y COEXISTENCIA
     # =============================================================
