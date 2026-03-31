@@ -34,9 +34,40 @@ def lambda_handler(event, context):
             splits_requeridos = carrera_info.get('splits', [])
             event_id_filter = carrera_info.get('event_id_filter')
             event_std_filter = carrera_info.get('event_std_filter')
-            tipo_modelo = carrera_info.get('tipo_modelo', 'interpolacion')  # ← NUEVO
+            tipo_modelo = carrera_info.get('tipo_modelo', 'interpolacion')
             training_params = carrera_info.get('training_params', {})
 
+            # =============================================================
+            # 🆕 NUEVA VALIDACIÓN 1: Verificar que splits sea una LISTA
+            # =============================================================
+            if not isinstance(splits_requeridos, list):
+                raise ValueError(
+                    f"splits debe ser una lista de strings, "
+                    f"recibido: {type(splits_requeridos).__name__} = {splits_requeridos}"
+                )
+            
+            # =============================================================
+            # 🆕 NUEVA VALIDACIÓN 2: Verificar que cada split sea STRING
+            # =============================================================
+            for i, split in enumerate(splits_requeridos):
+                if not isinstance(split, str):
+                    raise ValueError(
+                        f"Cada split debe ser un string, "
+                        f"pero el elemento {i} es {type(split).__name__} = {split}"
+                    )
+            
+            # =============================================================
+            # 🆕 NUEVA VALIDACIÓN 3: Verificar que training_params sea DICCIONARIO
+            # =============================================================
+            if not isinstance(training_params, dict):
+                raise ValueError(
+                    f"training_params debe ser un diccionario, "
+                    f"recibido: {type(training_params).__name__} = {training_params}"
+                )
+
+            # =============================================================
+            # VALIDACIONES EXISTENTES
+            # =============================================================
             if not carrera_objetivo or not splits_requeridos:
                 continue
 
@@ -49,7 +80,7 @@ def lambda_handler(event, context):
                 'splits': splits_requeridos,
                 'event_id_filter': event_id_filter,
                 'event_std_filter': event_std_filter,
-                'tipo_modelo': tipo_modelo,  # ← NUEVO
+                'tipo_modelo': tipo_modelo,
                 'training_params': training_params
             })
 
@@ -58,6 +89,8 @@ def lambda_handler(event, context):
 
         print("✅ Configuración preparada correctamente")
 
+        # 🆕 (OPCIONAL) Corregir el warning de deprecación
+        # timestamp_unico = datetime.now(datetime.UTC).strftime("%Y%m%d-%H%M%S")
         timestamp_unico = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
 
         salida = {
