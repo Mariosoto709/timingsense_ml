@@ -284,6 +284,31 @@ def procesar_una_carrera(config, timestamp_unico):
         print(f"\n📝 Ejecutando CTAS query...")
         data_location = execute_athena_query(ctas_query)
         print(f"✅ Tabla creada en: {data_location}")
+
+        # 🚨 VALIDACIÓN GLUE DATOS (1+2)
+        print(f"🔍 Validando calidad dataset...")
+        try:
+            import pandas as pd
+            df_sample = pd.read_parquet(data_location, nrows=1000)
+            
+            # 1️⃣ VOLUMEN MÍNIMO
+            if len(df_sample) < 100:
+                raise ValueError(f"Datos insuficientes: {len(df_sample)} filas")
+            
+            # 2️⃣ NULOS TOTALES >20%
+            null_ratio = df_sample.isnull().sum().sum() / (len(df_sample) * len(df_sample.columns))
+            if null_ratio > 0.20:
+                raise ValueError(f"Demasiados nulos: {null_ratio:.1%} ({df_sample.isnull().sum().sum()} nulos)")
+            
+            print(f"✅ Dataset OK: {len(df_sample)} filas, {null_ratio:.1%} nulos")
+            
+        except Exception as e:
+            print(f"❌ VALIDACIÓN FALLIDA: {e}")
+            # LIMPIAR TABLA FALLIDA
+            drop_query = f"DROP TABLE {DATABASE}.{nombre_tabla_resultado}"
+            execute_athena_query(drop_query)
+            raise ValueError(f"Dataset inválido: {e}")
+
         print(f"📁 Datos guardados en: {data_s3_path}")
 
     # Guardar metadata
