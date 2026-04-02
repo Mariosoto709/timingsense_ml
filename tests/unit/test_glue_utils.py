@@ -26,27 +26,23 @@ from glue_utils import (
 class TestExtractSplitDistance:
     """Pruebas para extract_split_distance"""
     
-    def test_splits_kilometricos_normales(self):
-        assert extract_split_distance("km_5") == 5.0
-        assert extract_split_distance("km_10") == 10.0
-        assert extract_split_distance("km_42") == 42.0
-    
-    def test_splits_con_decimales(self):
-        assert extract_split_distance("km_18_2") == 18.2
-        assert extract_split_distance("km_21_0975") == 21.0975
-    
-    def test_splits_especiales(self):
-        assert extract_split_distance("half") == 21.0975
-        assert extract_split_distance("finish") == 42.195
-        assert extract_split_distance("start") == 0.0
-    
-    def test_splits_con_punto(self):
-        assert extract_split_distance("km_18.2") == 18.2
-    
-    def test_casos_borde(self):
-        assert extract_split_distance(None) is None
-        assert extract_split_distance("") is None
-        assert extract_split_distance("km_") is None
+    @pytest.mark.parametrize("split,esperado", [
+        ("km_5", 5.0),
+        ("km_10", 10.0),
+        ("km_42", 42.0),
+        ("km_18_2", 18.2), 
+        ("km_21_0975", 21.0975),
+        ("km_18.2", 18.2),
+        ("half", 21.0975),
+        ("finish", 42.195),
+        ("start", 0.0),
+        (None, None),
+        ("", None),
+        ("km_", None)
+    ])
+    def test_extract_split_distance_completo(self, split, esperado):
+        """🎯 MEJORA: Parametriza TODOS los casos (DRY)"""
+        assert extract_split_distance(split) == esperado
 
 
 # =============================================================
@@ -155,8 +151,16 @@ class TestAnalyzeSplitRequirements:
         assert "split_inexistente" in resultado["splits_imposibles"]
         assert len(resultado["splits_finales"]) == 0
 
+    def test_analyze_split_requirements_realista(self, carreras_historicas_sample):
+        """Barcelona-2026 pide km_5+km_12+half (mix directo/interpolar)"""
+        splits_objetivo = ["km_5", "km_12", "half", "split_imposible"]
+        resultado = analyze_split_requirements(splits_objetivo, carreras_historicas_sample)
+        
+        assert len(resultado["splits_directos"]) == 2        # km_5, half  
+        assert len(resultado["splits_interpolables"]) == 1    # km_12
+        assert len(resultado["splits_imposibles"]) == 1       # split_imposible
+        assert len(resultado["splits_finales"]) == 3          # km_5, km_12, half
 
-# tests/unit/test_glue_utils.py (añadir al final)
 
 import pandas as pd
 import numpy as np
@@ -280,7 +284,7 @@ class TestValidarCalidadDatos:
         resultado = validar_calidad_datos(df, splits, umbral_min_registros=100)
         
         assert resultado['valido'] == False
-        assert len(resultado['errores']) >= 2  # múltiples errores
+        assert len(resultado['errores']) >= 2  
     
     def test_validacion_metricas_retornadas(self):
         """Verifica que las métricas se retornan correctamente"""
@@ -297,6 +301,17 @@ class TestValidarCalidadDatos:
         assert 'n_splits' in resultado['metricas']
         assert 'nulos_km_5' in resultado['metricas']
         assert 'nulos_km_10' in resultado['metricas']
+
+    def test_validacion_outliers_maraton(self):
+        """5% corredores imposibles (>6h km_5) → WARNING"""
+        df = pd.DataFrame({
+            'athlete_id': [f'a{i}' for i in range(200)],
+            'km_5': [1800]*190 + [25000, 30000, 35000, 40000, 50000, 55000, 60000, 65000, 70000, 75000]
+        })
+        resultado = validar_calidad_datos(df, ['km_5'])
+        assert len(resultado['warnings']) > 0
+        assert "horas" in resultado['warnings'][0]
+        assert resultado['valido'] == True
 
 
 if __name__ == "__main__":
