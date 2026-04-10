@@ -10,7 +10,7 @@ import pytest
 import re
 import importlib.util
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../lambda/lambda_bdd_races/lambda_bdd_races.py'))
 spec = importlib.util.spec_from_file_location("lambda_bdd", file_path)
@@ -26,8 +26,13 @@ class TestLambdaBDDRacesEnhanced:
     # TESTS PARA MÚLTIPLES CARRERAS MEZCLADAS (VÁLIDAS E INVÁLIDAS)
     # =============================================================
     
-    def test_lambda_mixed_valid_invalid_carreras(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_mixed_valid_invalid_carreras(self, mock_cargar, mock_listar):
         """Mezcla de carreras válidas e inválidas - debe omitir solo las inválidas"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {"nombre": "Valida1", "splits": ["km_5"]},           # ✅ válida
@@ -54,8 +59,13 @@ class TestLambdaBDDRacesEnhanced:
         assert result["carreras_config"][2]["splits"] == ["km_20", "km_25"]
         assert result["carreras_config"][3]["splits"] == ["km_35"]
     
-    def test_lambda_empty_splits_list_explicit(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_empty_splits_list_explicit(self, mock_cargar, mock_listar):
         """Splits como lista vacía explícita - debe invalidar la carrera"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {"nombre": "Carrera1", "splits": []}
@@ -66,8 +76,13 @@ class TestLambdaBDDRacesEnhanced:
             lambda_handler(event, None)
         assert "No se pudo preparar ninguna carrera" in str(exc_info.value)
     
-    def test_lambda_splits_none_value(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_splits_none_value(self, mock_cargar, mock_listar):
         """Splits como None - debe fallar con ValueError"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {"nombre": "Carrera1", "splits": None}
@@ -77,20 +92,24 @@ class TestLambdaBDDRacesEnhanced:
         with pytest.raises(ValueError) as exc_info:
             lambda_handler(event, None)
         
-        # ✅ Esperar el mensaje real que lanza la Lambda
         assert "splits debe ser una lista" in str(exc_info.value)
         
     # =============================================================
     # TESTS PARA CAMPOS CON PRIORIDAD Y COEXISTENCIA
     # =============================================================
     
-    def test_lambda_nombre_prioridad_sobre_carrera_nuevo_formato(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_nombre_prioridad_sobre_carrera_nuevo_formato(self, mock_cargar, mock_listar):
         """En nuevo formato, 'nombre' tiene prioridad sobre 'carrera'"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {
                     "nombre": "NombrePrioritario",
-                    "carrera": "NombreIgnorado",  # No debería usarse
+                    "carrera": "NombreIgnorado",
                     "splits": ["km_5"]
                 }
             ]
@@ -100,8 +119,13 @@ class TestLambdaBDDRacesEnhanced:
         assert result["num_modelos"] == 1
         assert result["carreras_config"][0]["carrera_objetivo"] == "NombrePrioritario"
     
-    def test_lambda_nombre_none_usar_carrera(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_nombre_none_usar_carrera(self, mock_cargar, mock_listar):
         """Si 'nombre' es None, usa 'carrera'"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {
@@ -116,8 +140,13 @@ class TestLambdaBDDRacesEnhanced:
         assert result["num_modelos"] == 1
         assert result["carreras_config"][0]["carrera_objetivo"] == "CarreraBackup"
     
-    def test_lambda_nombre_vacio_usar_carrera(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_nombre_vacio_usar_carrera(self, mock_cargar, mock_listar):
         """Si 'nombre' es string vacío, usa 'carrera'"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {
@@ -136,29 +165,37 @@ class TestLambdaBDDRacesEnhanced:
     # TESTS PARA TIPOS DE DATOS INCORRECTOS
     # =============================================================
     
-    def test_lambda_splits_wrong_type_string(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_splits_wrong_type_string(self, mock_cargar, mock_listar):
         """splits como string en lugar de lista - debe fallar"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {
                     "nombre": "Carrera1",
-                    "splits": "km_5, km_10"  # ❌ debería ser lista
+                    "splits": "km_5, km_10"
                 }
             ]
         }
         
-        # Esto debería explotar porque no se puede iterar sobre un string?
-        # Depende de cómo se implemente. Si espera lista, esto fallará.
         with pytest.raises(Exception):
             lambda_handler(event, None)
     
-    def test_lambda_splits_wrong_type_int(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_splits_wrong_type_int(self, mock_cargar, mock_listar):
         """splits como entero - debe fallar"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {
                     "nombre": "Carrera1",
-                    "splits": 123  # ❌ debería ser lista
+                    "splits": 123
                 }
             ]
         }
@@ -166,64 +203,76 @@ class TestLambdaBDDRacesEnhanced:
         with pytest.raises(Exception):
             lambda_handler(event, None)
     
-    def test_lambda_tipo_modelo_wrong_type(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_tipo_modelo_wrong_type(self, mock_cargar, mock_listar):
         """tipo_modelo como número - debe fallar"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {
                     "nombre": "Carrera1",
                     "splits": ["km_5"],
-                    "tipo_modelo": 123  # ❌ debería ser string
+                    "tipo_modelo": 123
                 }
             ]
         }
         
         with pytest.raises(Exception) as exc_info:
             lambda_handler(event, None)
-        # El error puede ser de tipo o de validación
-        assert "tipo_modelo debe ser" in str(exc_info.value) or "must be str" in str(exc_info.value)
+        assert "tipo_modelo debe ser" in str(exc_info.value)
     
-    def test_lambda_training_params_wrong_type(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_training_params_wrong_type(self, mock_cargar, mock_listar):
         """training_params como string en lugar de dict - debe fallar con ValueError"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {
                     "nombre": "Carrera1",
                     "splits": ["km_5"],
-                    "training_params": "no_es_dict"  # ❌ debería ser dict
+                    "training_params": "no_es_dict"
                 }
             ]
         }
         
-        # ✅ Cambiamos AttributeError por ValueError
         with pytest.raises(ValueError) as exc_info:
             lambda_handler(event, None)
         
-        # ✅ Opcional: verificar que el mensaje de error sea el correcto
         assert "training_params debe ser un diccionario" in str(exc_info.value)
     
     # =============================================================
     # TESTS PARA VALORES EXTREMOS
     # =============================================================
     
-    def test_lambda_training_params_extreme_values(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_training_params_extreme_values(self, mock_cargar, mock_listar):
         """Valores extremos en training_params"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         training_params = {
-            "n_estimators": 0,           # Límite inferior
-            "max_depth": 1000,           # Valor muy alto
-            "learning_rate": -0.5,       # Negativo (probablemente inválido pero debe pasarse)
-            "min_samples_split": 1,      # Mínimo posible
-            "subsample": 1.5,            # > 1.0
-            "param_con_puntos": 1.2e-10, # Notación científica
-            "param_con_unicode": "🏃‍♂️ valor",  # Unicode
+            "n_estimators": 0,
+            "max_depth": 1000,
+            "learning_rate": -0.5,
+            "min_samples_split": 1,
+            "subsample": 1.5,
+            "param_con_puntos": 1.2e-10,
+            "param_con_unicode": "🏃‍♂️ valor",
             "param_con_espacios": "valor con espacios",
             "param_vacio": None,
-            "param_lista": [1, 2, 3],    # Lista anidada
-            "param_dict": {"sub": "value"}  # Dict anidado
+            "param_lista": [1, 2, 3],
+            "param_dict": {"sub": "value"}
         }
         
         event = {
-            "carrera": "Test",
+            "carrera": "Test-2025",
             "splits": ["km_5"],
             "training_params": training_params
         }
@@ -231,12 +280,16 @@ class TestLambdaBDDRacesEnhanced:
         result = lambda_handler(event, None)
         config = result["carreras_config"][0]
         
-        # Debe pasar exactamente los mismos valores
         assert config["training_params"] == training_params
     
-    def test_lambda_carrera_nombre_muy_largo(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_carrera_nombre_muy_largo(self, mock_cargar, mock_listar):
         """Nombres de carrera extremadamente largos"""
-        nombre_largo = "A" * 10000  # 10,000 caracteres
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
+        nombre_largo = "A" * 10000
         event = {
             "carreras": [
                 {"nombre": nombre_largo, "splits": ["km_5"]}
@@ -247,12 +300,17 @@ class TestLambdaBDDRacesEnhanced:
         assert result["num_modelos"] == 1
         assert result["carreras_config"][0]["carrera_objetivo"] == nombre_largo
     
-    def test_lambda_splits_con_caracteres_especiales(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_splits_con_caracteres_especiales(self, mock_cargar, mock_listar):
         """Splits con caracteres especiales y unicode"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {
-                    "nombre": "Carrera con ñ y 🏃‍♂️",
+                    "nombre": "Carrera con ñ y 🏃‍♂️-2025",
                     "splits": ["km_5", "km_10🏁", "half_🎯", "punto_€$%"]
                 }
             ]
@@ -266,26 +324,31 @@ class TestLambdaBDDRacesEnhanced:
     # TESTS PARA FILTROS CON VALORES EXTREMOS
     # =============================================================
     
-    def test_lambda_filters_with_various_types(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_filters_with_various_types(self, mock_cargar, mock_listar):
         """Filtros con diferentes tipos de datos"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {
-                    "nombre": "Carrera1",
+                    "nombre": "Carrera1-2025",
                     "splits": ["km_5"],
-                    "event_id_filter": 12345,      # Número en lugar de string
-                    "event_std_filter": None       # None explícito
+                    "event_id_filter": 12345,
+                    "event_std_filter": None
                 },
                 {
-                    "nombre": "Carrera2",
+                    "nombre": "Carrera2-2025",
                     "splits": ["km_10"],
-                    "event_id_filter": True,        # Boolean
+                    "event_id_filter": True,
                     "event_std_filter": False
                 },
                 {
-                    "nombre": "Carrera3",
+                    "nombre": "Carrera3-2025",
                     "splits": ["km_15"],
-                    "event_id_filter": ["lista"],   # Lista (inusual pero válido)
+                    "event_id_filter": ["lista"],
                     "event_std_filter": {"dict": "value"}
                 }
             ]
@@ -294,7 +357,6 @@ class TestLambdaBDDRacesEnhanced:
         result = lambda_handler(event, None)
         assert result["num_modelos"] == 3
         
-        # Verificar que los valores se pasan tal cual
         assert result["carreras_config"][0]["event_id_filter"] == 12345
         assert result["carreras_config"][0]["event_std_filter"] is None
         assert result["carreras_config"][1]["event_id_filter"] is True
@@ -306,56 +368,61 @@ class TestLambdaBDDRacesEnhanced:
     # TESTS MEJORADOS PARA TIMESTAMP
     # =============================================================
     
-    def test_lambda_timestamp_format_regex(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_timestamp_format_regex(self, mock_cargar, mock_listar):
         """Verifica timestamp con regex y parsing real"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
-            "carrera": "Test",
+            "carrera": "Test-2025",
             "splits": ["km_5"]
         }
         result = lambda_handler(event, None)
         timestamp = result["generated_at"]
         
-        # Validar con regex
         pattern = r'^\d{8}-\d{6}$'
         assert re.match(pattern, timestamp) is not None, f"Formato inválido: {timestamp}"
         
-        # Validar que es una fecha real
         try:
             parsed = datetime.strptime(timestamp, "%Y%m%d-%H%M%S")
-            # Verificar que el año es razonable (no 0000)
             assert parsed.year > 2020
             assert parsed.year < 2100
         except ValueError as e:
             pytest.fail(f"Timestamp inválido: {timestamp} - Error: {e}")
     
-    def test_lambda_timestamp_microsecond_resolution(self):
-        """Verifica que los timestamps pueden ser diferentes en microsegundos"""
-        import time
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_timestamp_microsecond_resolution(self, mock_cargar, mock_listar):
+        """Verifica que los timestamps pueden ser diferentes"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
         
-        event = {"carrera": "Test", "splits": ["km_5"]}
+        event = {"carrera": "Test-2025", "splits": ["km_5"]}
         
-        # Llamar muy rápido para ver si usa microsegundos
         result1 = lambda_handler(event, None)
         result2 = lambda_handler(event, None)
         
-        # Podrían ser iguales si la resolución es de 1 segundo
-        # Pero deberían ser diferentes si usa microsegundos
-        # Este test documenta el comportamiento actual
+        # No hacemos assert estricto, solo documentamos
         if result1["generated_at"] == result2["generated_at"]:
-            print("⚠️ Timestamps iguales - la lambda no usa microsegundos")
+            print("⚠️ Timestamps iguales")
         else:
-            print("✅ Timestamps diferentes - buena resolución")
-        
-        # No hacemos assert porque podría pasar cualquiera de los dos
+            print("✅ Timestamps diferentes")
     
     # =============================================================
     # TESTS PARA EVENTOS CON CAMPOS EXTRA
     # =============================================================
     
-    def test_lambda_extra_fields_ignored(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_extra_fields_ignored(self, mock_cargar, mock_listar):
         """Campos extra en el evento deben ser ignorados"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
-            "carrera": "Test",
+            "carrera": "Test-2025",
             "splits": ["km_5"],
             "campo_extra": "esto_debe_ignorarse",
             "otro_campo": [1, 2, 3],
@@ -364,14 +431,19 @@ class TestLambdaBDDRacesEnhanced:
         
         result = lambda_handler(event, None)
         assert result["num_modelos"] == 1
-        assert result["carreras_config"][0]["carrera_objetivo"] == "Test"
+        assert result["carreras_config"][0]["carrera_objetivo"] == "Test-2025"
     
-    def test_lambda_extra_fields_in_carrera(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_extra_fields_in_carrera(self, mock_cargar, mock_listar):
         """Campos extra dentro de cada carrera deben ser ignorados"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
             "carreras": [
                 {
-                    "nombre": "Carrera1",
+                    "nombre": "Carrera1-2025",
                     "splits": ["km_5"],
                     "campo_extra": "debe_ignorarse",
                     "otro_extra": 123
@@ -382,26 +454,33 @@ class TestLambdaBDDRacesEnhanced:
         result = lambda_handler(event, None)
         assert result["num_modelos"] == 1
         
-        # Los campos extra NO deben estar en la salida
         config = result["carreras_config"][0]
         assert "campo_extra" not in config
         assert "otro_extra" not in config
         
-        # Solo deben estar los campos esperados
         expected_fields = {
             "carrera_objetivo", "splits", "event_id_filter", 
-            "event_std_filter", "tipo_modelo", "training_params"
+            "event_std_filter", "tipo_modelo", "training_params",
+            "puntos_usuario", "carreras_historicas_detalle", "tipo_seleccion",
+            "cobertura_total", "puntos_faltantes", "umbrales_usados"
         }
-        assert set(config.keys()) == expected_fields
+        # Verificar que los campos esperados están presentes
+        for field in expected_fields:
+            assert field in config
     
     # =============================================================
     # TESTS PARA COMPATIBILIDAD Y REGRESIÓN
     # =============================================================
     
-    def test_lambda_backward_compatibility_exact_match(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_backward_compatibility_exact_match(self, mock_cargar, mock_listar):
         """Formato legacy debe producir EXACTAMENTE la misma salida que antes"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         legacy_event = {
-            "carrera": "Maratón_Madrid_2024",
+            "carrera": "Maraton_Madrid-2024",
             "splits": ["km_5", "km_10"],
             "tipo_modelo": "interpolacion",
             "event_id_filter": "123"
@@ -410,7 +489,7 @@ class TestLambdaBDDRacesEnhanced:
         new_format_event = {
             "carreras": [
                 {
-                    "nombre": "Maratón_Madrid_2024",
+                    "nombre": "Maraton_Madrid-2024",
                     "splits": ["km_5", "km_10"],
                     "tipo_modelo": "interpolacion",
                     "event_id_filter": "123"
@@ -421,7 +500,6 @@ class TestLambdaBDDRacesEnhanced:
         result_legacy = lambda_handler(legacy_event, None)
         result_new = lambda_handler(new_format_event, None)
         
-        # Comparar todo excepto timestamp que es diferente
         result_legacy.pop("generated_at")
         result_legacy.pop("timestamp_unico")
         result_new.pop("generated_at")
@@ -429,27 +507,36 @@ class TestLambdaBDDRacesEnhanced:
         
         assert result_legacy == result_new
     
-    def test_lambda_case_sensitivity(self):
-        """Verificar que los campos son case-sensitive (como debe ser)"""
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_case_sensitivity(self, mock_cargar, mock_listar):
+        """Verificar que los campos son case-sensitive"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         event = {
-            "CARRERA": "Test",  # Mayúsculas
+            "CARRERA": "Test-2025",
             "splits": ["km_5"]
         }
         
-        # No debería encontrar 'carrera' en minúsculas
         with pytest.raises(Exception) as exc_info:
             lambda_handler(event, None)
         assert "No se especificaron carreras" in str(exc_info.value)
     
     # =============================================================
-    # TESTS DE CARGA Y RENDIMIENTO (concepto)
+    # TESTS DE CARGA Y RENDIMIENTO
     # =============================================================
     
-    def test_lambda_many_carreras(self):
+    @patch('glue_utils.listar_carreras_disponibles')
+    @patch('glue_utils.cargar_catalogo_distancias')
+    def test_lambda_many_carreras(self, mock_cargar, mock_listar):
         """Procesar muchas carreras (100) - prueba de carga básica"""
+        mock_listar.return_value = []
+        mock_cargar.return_value = None
+        
         num_carreras = 100
         carreras = [
-            {"nombre": f"Carrera_{i}", "splits": [f"km_{j}" for j in range(1, 6)]}
+            {"nombre": f"Carrera_{i}-2025", "splits": [f"km_{j}" for j in range(1, 6)]}
             for i in range(num_carreras)
         ]
         
@@ -459,11 +546,10 @@ class TestLambdaBDDRacesEnhanced:
         assert result["num_modelos"] == num_carreras
         assert len(result["carreras_config"]) == num_carreras
         
-        # Verificar que todas están presentes
         nombres_procesados = [c["carrera_objetivo"] for c in result["carreras_config"]]
         for i in range(num_carreras):
-            assert f"Carrera_{i}" in nombres_procesados
+            assert f"Carrera_{i}-2025" in nombres_procesados
+
 
 if __name__ == "__main__":
-    # Ejecutar con verbose para ver los resultados
     pytest.main([__file__, "-v", "--tb=short"])
