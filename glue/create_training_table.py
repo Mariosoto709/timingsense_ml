@@ -11,7 +11,7 @@ from datetime import datetime
 from awsglue.utils import getResolvedOptions
 
 # Importar utilidades locales
-from glue_utils import analyze_split_requirements, extract_split_distance
+from glue_utils import analyze_split_requirements
 from athena_utils import (
     execute_athena_query,
     tabla_existe,
@@ -20,148 +20,6 @@ from athena_utils import (
     S3_ATHENA_OUTPUT,
     DATABASE
 )
-
-
-# ============================================================
-# FUNCIONES DE ORQUESTACIÓN
-# ============================================================
-
-def obtener_carreras_historicas(carrera_objetivo, splits, event_id_filter=None, event_std_filter=None, num_carreras_necesarias=5):
-    """Obtiene carreras históricas desde S3"""
-    try:
-        response = s3.get_object(
-            Bucket='timingsense-races-processed-wide',
-            Key='athena_catalog/esquemas_carreras.json'
-        )
-        catalogo = json.loads(response['Body'].read())
-    except Exception as e:
-        print(f"❌ Error cargando catálogo: {e}")
-        return []
-
-    match = re.match(r"(.*)-(\d{4})$", carrera_objetivo)
-    if not match:
-        print(f"❌ Formato inválido: {carrera_objetivo}")
-        return []
-
-    base, year_str = match.groups()
-    year_objetivo = int(year_str)
-
-    set_splits_objetivo = set([s.lower() for s in splits])
-    print(f"🔍 DEBUG - Splits objetivo normalizados: {set_splits_objetivo}")
-
-    historicas = []
-    for _, info in catalogo['carreras'].items():
-        race_id = info['race_id']
-        if race_id.startswith(f"{base}-"):
-            try:
-                año = int(race_id.split('-')[-1])
-            except:
-                continue
-            
-            set_splits_catalogo = set([s.lower() for s in info['splits']])
-            
-            if año < year_objetivo and set_splits_catalogo == set_splits_objetivo:
-                pasa_filtro = True
-                if event_id_filter and info['event_id'] != event_id_filter:
-                    pasa_filtro = False
-                if event_std_filter and info.get('event_std') != event_std_filter:
-                    pasa_filtro = False
-                if pasa_filtro:
-                    historicas.append(info)
-                    print(f"✅ Match encontrado: {race_id}")
-
-    print(f"📊 Total carreras históricas encontradas: {len(historicas)}")
-    return historicas[:num_carreras_necesarias]
-
-
-def obtener_carreras_historicas_adaptativo(carrera_objetivo, splits, event_id_filter=None, event_std_filter=None, num_carreras_necesarias=5):
-    """Versión adaptativa que encuentra carreras históricas con splits compatibles"""
-    try:
-        response = s3.get_object(
-            Bucket='timingsense-races-processed-wide',
-            Key='athena_catalog/esquemas_carreras.json'
-        )
-        catalogo = json.loads(response['Body'].read())
-    except Exception as e:
-        print(f"❌ Error cargando catálogo: {e}")
-        return [], None
-
-    match = re.match(r"(.*)-(\d{4})$", carrera_objetivo)
-    if not match:
-        print(f"❌ Formato inválido: {carrera_objetivo}")
-        return [], None
-
-    base, year_str = match.groups()
-    year_objetivo = int(year_str)
-
-    splits_objetivo_norm = [s.lower().replace('.', '_') for s in splits]
-    print(f"🔍 DEBUG - Splits objetivo normalizados: {splits_objetivo_norm}")
-
-    candidatas = []
-    for _, info in catalogo['carreras'].items():
-        race_id = info['race_id']
-        if race_id.startswith(f"{base}-"):
-            try:
-                año = int(race_id.split('-')[-1])
-            except:
-                continue
-            
-            if año < year_objetivo:
-                set_splits_catalogo = set([s.lower() for s in info['splits']])
-                
-                pasa_filtro = True
-                if event_id_filter and info['event_id'] != event_id_filter:
-                    pasa_filtro = False
-                if event_std_filter and info.get('event_std') != event_std_filter:
-                    pasa_filtro = False
-                
-                if pasa_filtro:
-                    candidatas.append({
-                        'info': info,
-                        'año': año,
-                        'splits': set_splits_catalogo
-                    })
-                    print(f"✅ Candidata encontrada: {race_id} - Splits: {sorted(set_splits_catalogo)}")
-
-    if not candidatas:
-        print(f"⚠️ No se encontraron candidatas para {base}")
-        return [], None
-
-    todas_historicas = [c['info'] for c in candidatas]
-    analisis = analyze_split_requirements(splits_objetivo_norm, todas_historicas)
-    
-    print(f"\n📊 RESULTADO DEL ANÁLISIS:")
-    print(f"   Splits directos: {analisis['splits_directos']}")
-    print(f"   Splits interpolables: {[s['split_objetivo'] for s in analisis['splits_interpolables']]}")
-    print(f"   Splits imposibles: {analisis['splits_imposibles']}")
-    
-    if analisis['splits_imposibles']:
-        print(f"\n⚠️ Hay splits imposibles, filtrando candidatas...")
-        candidatas_filtradas = []
-        for cand in candidatas:
-            tiene_distancia = any(extract_split_distance(s) is not None for s in cand['splits'])
-            if tiene_distancia:
-                candidatas_filtradas.append(cand)
-                print(f"   ✅ {cand['info']['race_id']} - tiene splits de distancia")
-            else:
-                print(f"   ❌ {cand['info']['race_id']} - descartada (sin splits de distancia)")
-        
-        if candidatas_filtradas:
-            candidatas = candidatas_filtradas
-        else:
-            print(f"❌ No quedan candidatas después del filtro")
-            return [], analisis
-    
-    candidatas.sort(key=lambda x: x['año'], reverse=True)
-    seleccionadas = candidatas[:num_carreras_necesarias]
-    
-    historicas = [c['info'] for c in seleccionadas]
-    
-    print(f"\n📊 Carreras seleccionadas ({len(historicas)}):")
-    for c in seleccionadas:
-        print(f"   - {c['info']['race_id']} ({c['año']})")
-    
-    return historicas, analisis
 
 
 def crear_tabla_temporal_adaptativa(splits, analisis, carreras_historicas):
@@ -214,28 +72,58 @@ def crear_tabla_temporal_adaptativa(splits, analisis, carreras_historicas):
 
 
 def procesar_una_carrera(config, timestamp_unico):
-    """Procesa una carrera individual"""
+    """
+    Procesa una carrera individual.
+    Las carreras históricas ya vienen seleccionadas desde la Lambda.
+    """
     carrera_objetivo = config["carrera_objetivo"]
-    splits = config["splits"]
+    splits = config["splits"]  # nombres originales de splits (ej. ["5K", "10K", "Media"])
     event_id_filter = config.get("event_id_filter")
     event_std_filter = config.get("event_std_filter")
-
-    print(f"\n🔍 CONFIGURACIÓN RECIBIDA:")
-    print(f"   Carrera: {carrera_objetivo}")
-    print(f"   Splits: {splits}")
-
-    carreras_historicas, analisis = obtener_carreras_historicas_adaptativo(
-        carrera_objetivo=carrera_objetivo,
-        splits=splits,
-        event_id_filter=event_id_filter,
-        event_std_filter=event_std_filter,
-        num_carreras_necesarias=5
-    )
-
-    if not carreras_historicas:
-        print(f"⚠️ No se encontraron carreras históricas para {carrera_objetivo}")
+    tipo_seleccion = config.get('tipo_seleccion', 'desconocido')
+    cobertura_total = config.get('cobertura_total', 0)
+    
+    # =============================================================
+    # OBTENER CARRERAS HISTÓRICAS DESDE LA CONFIGURACIÓN
+    # =============================================================
+    carreras_historicas_detalle = config.get('carreras_historicas_detalle', [])
+    
+    if not carreras_historicas_detalle:
+        print(f"⚠️ No se proporcionaron carreras históricas para {carrera_objetivo}")
         return None
+    
+    # Transformar al formato que espera analyze_split_requirements
+    carreras_historicas = []
+    for h in carreras_historicas_detalle:
+        carreras_historicas.append({
+            'race_id': h['race_id'],
+            'event_id': h.get('evento', 'unknown'),
+            'splits': h['splits']  # lista de strings normalizados (ej. ["km_5", "km_10", "half"])
+        })
+    
+    print(f"\n🔍 CONFIGURACIÓN RECIBIDA:")
+    print(f"   Carrera objetivo: {carrera_objetivo}")
+    print(f"   Splits solicitados: {splits}")
+    print(f"   Tipo selección: {tipo_seleccion}")
+    print(f"   Cobertura total: {cobertura_total:.1%}")
+    print(f"   Carreras históricas a usar: {len(carreras_historicas)}")
+    
+    for c in carreras_historicas:
+        print(f"      - {c['race_id']} (evento: {c['event_id']}, splits: {len(c['splits'])})")
+    
+    # =============================================================
+    # ANALIZAR REQUISITOS DE SPLITS
+    # =============================================================
+    analisis = analyze_split_requirements(splits, carreras_historicas)
+    
+    print(f"\n📊 RESULTADO DEL ANÁLISIS:")
+    print(f"   Splits directos: {analisis['splits_directos']}")
+    print(f"   Splits interpolables: {[s['split_objetivo'] for s in analisis['splits_interpolables']]}")
+    print(f"   Splits imposibles: {analisis['splits_imposibles']}")
 
+    # =============================================================
+    # CREAR CARPETA Y TABLA TEMPORAL
+    # =============================================================
     carpeta_modelo = f"{carrera_objetivo}-{timestamp_unico}"
     data_s3_path = f"s3://{S3_ATHENA_OUTPUT}/modelos/{carpeta_modelo}/data/"
 
@@ -246,6 +134,9 @@ def procesar_una_carrera(config, timestamp_unico):
         splits, analisis, carreras_historicas
     )
 
+    # =============================================================
+    # CONSTRUIR WHERE CLAUSE
+    # =============================================================
     condiciones = [f"(race_id = '{c['race_id']}' AND event_id = '{c['event_id']}')" 
                    for c in carreras_historicas]
     where_clause = " OR ".join(condiciones)
@@ -255,7 +146,9 @@ def procesar_una_carrera(config, timestamp_unico):
     if event_std_filter and event_std_filter != 'None':
         where_clause = f"({where_clause}) AND event_std = '{event_std_filter}'"
 
-    # Construir SELECT
+    # =============================================================
+    # CONSTRUIR SELECT CON LOS SPLITS FINALES
+    # =============================================================
     select_cols = ["athlete_id", "event_id", "event_std", "gender", "age"]
     
     for split_final in splits_finales:
@@ -264,6 +157,9 @@ def procesar_una_carrera(config, timestamp_unico):
     
     select_clause = ",\n        ".join(select_cols)
 
+    # =============================================================
+    # CREAR TABLA RESULTADO (CTAS)
+    # =============================================================
     nombre_limpio = re.sub(r'[^a-zA-Z0-9_-]', '_', carrera_objetivo)
     nombre_tabla_resultado = f"modelo_{nombre_limpio}_{timestamp_unico}".replace('-', '_')
     print(f"\n📊 Tabla resultado: {nombre_tabla_resultado}")
@@ -285,17 +181,19 @@ def procesar_una_carrera(config, timestamp_unico):
         data_location = execute_athena_query(ctas_query)
         print(f"✅ Tabla creada en: {data_location}")
 
-        # 🚨 VALIDACIÓN GLUE DATOS (1+2)
+        # =============================================================
+        # VALIDACIÓN DE CALIDAD DE DATOS
+        # =============================================================
         print(f"🔍 Validando calidad dataset...")
         try:
             import pandas as pd
             df_sample = pd.read_parquet(data_location, nrows=1000)
             
-            # 1️⃣ VOLUMEN MÍNIMO
+            # Volumen mínimo
             if len(df_sample) < 100:
                 raise ValueError(f"Datos insuficientes: {len(df_sample)} filas")
             
-            # 2️⃣ NULOS TOTALES >20%
+            # Nulos totales >20%
             null_ratio = df_sample.isnull().sum().sum() / (len(df_sample) * len(df_sample.columns))
             if null_ratio > 0.20:
                 raise ValueError(f"Demasiados nulos: {null_ratio:.1%} ({df_sample.isnull().sum().sum()} nulos)")
@@ -304,14 +202,16 @@ def procesar_una_carrera(config, timestamp_unico):
             
         except Exception as e:
             print(f"❌ VALIDACIÓN FALLIDA: {e}")
-            # LIMPIAR TABLA FALLIDA
+            # Limpiar tabla fallida
             drop_query = f"DROP TABLE {DATABASE}.{nombre_tabla_resultado}"
             execute_athena_query(drop_query)
             raise ValueError(f"Dataset inválido: {e}")
 
         print(f"📁 Datos guardados en: {data_s3_path}")
 
-    # Guardar metadata
+    # =============================================================
+    # GUARDAR METADATA
+    # =============================================================
     metadata = {
         "carrera": carrera_objetivo,
         "timestamp": timestamp_unico,
@@ -327,7 +227,9 @@ def procesar_una_carrera(config, timestamp_unico):
         "tabla_fuente": tabla_fuente,
         "tabla_generada": nombre_tabla_resultado,
         "carreras_utilizadas": [{"race_id": c['race_id'], "event_id": c['event_id']} for c in carreras_historicas],
-        "carreras_usadas": len(carreras_historicas)
+        "carreras_usadas": len(carreras_historicas),
+        "tipo_seleccion": tipo_seleccion,
+        "cobertura_total": cobertura_total
     }
 
     s3.put_object(
@@ -345,7 +247,9 @@ def procesar_una_carrera(config, timestamp_unico):
         "splits_originales": len(splits),
         "splits_interpolados": len(analisis['splits_interpolables']),
         "splits_imposibles": len(analisis['splits_imposibles']),
-        "carreras_usadas": len(carreras_historicas)
+        "carreras_usadas": len(carreras_historicas),
+        "tipo_seleccion": tipo_seleccion,
+        "cobertura_total": cobertura_total
     }
 
 
@@ -433,8 +337,7 @@ try:
     if resultados:
         carpeta_ejemplo = resultados[0]['carpeta_modelo']
         partes = carpeta_ejemplo.split('-')
-        timestamp_unico = partes[-2] + '-' + partes[-1]
-        timestamp_debug = timestamp_unico.replace('-', '_')
+        timestamp_debug = partes[-2] + '_' + partes[-1]
     else:
         timestamp_debug = datetime.now().strftime('%Y%m%d_%H%M%S')
     

@@ -5,6 +5,94 @@ Estas funciones se pueden testear localmente sin necesidad de AWS.
 """
 
 
+# ========== NUEVAS FUNCIONES PARA SELECCIÓN DE CARRERAS ==========
+
+def cargar_catalogo_distancias(race_id, bucket='timingsense-races-txt', prefix='pre_etl/splits_catalog/distancias/'):
+    """Carga el catálogo de distancias de una carrera desde S3."""
+    import boto3, json
+    s3 = boto3.client('s3')
+    key = f"{prefix}{race_id}.json"
+    try:
+        response = s3.get_object(Bucket=bucket, Key=key)
+        return json.loads(response['Body'].read())
+    except Exception as e:
+        print(f"⚠️ No se pudo cargar catálogo para {race_id}: {e}")
+        return None
+
+def listar_carreras_disponibles(bucket='timingsense-races-txt', prefix='pre_etl/splits_catalog/distancias/'):
+    """Lista todos los race_id disponibles en el catálogo."""
+    import boto3, re
+    s3 = boto3.client('s3')
+    try:
+        response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+        race_ids = []
+        for obj in response.get('Contents', []):
+            key = obj['Key']
+            match = re.search(r'([^/]+)\.json$', key)
+            if match:
+                race_ids.append(match.group(1))
+        return race_ids
+    except Exception as e:
+        print(f"⚠️ Error listando catálogos: {e}")
+        return []
+
+def calcular_cobertura_carrera(catalogo, puntos_usuario, tolerancia=5):
+    """
+    Calcula qué porcentaje de los puntos del usuario cubre una carrera.
+    puntos_usuario: lista de distancias en metros.
+    Retorna dict con cobertura, puntos_cubiertos, puntos_faltantes, evento_elegido.
+    """
+    mejor_evento = None
+    mejor_puntuacion = 0
+    mejor_puntos_cubiertos = []
+    for event in catalogo.get('events', []):
+        distancias_evento = [split['distance'] for split in event.get('splits', []) if 'distance' in split]
+        cubiertos = []
+        for p in puntos_usuario:
+            if any(abs(p - d) <= tolerancia for d in distancias_evento):
+                cubiertos.append(p)
+        puntuacion = len(cubiertos) / len(puntos_usuario) if puntos_usuario else 0
+        if puntuacion > mejor_puntuacion:
+            mejor_puntuacion = puntuacion
+            mejor_evento = event.get('name')
+            mejor_puntos_cubiertos = cubiertos
+    return {
+        'cobertura': mejor_puntuacion,
+        'puntos_cubiertos': mejor_puntos_cubiertos,
+        'puntos_faltantes': [p for p in puntos_usuario if p not in mejor_puntos_cubiertos],
+        'evento_elegido': mejor_evento
+    }
+
+def buscar_mejor_combinacion_fallback(candidatas, puntos_usuario, max_carreras=3, umbral_minimo=0.70):
+    """
+    Encuentra la mejor combinación de hasta max_carreras que maximice cobertura.
+    candidatas: lista de dict con keys: race_id, puntos_cubiertos, cobertura.
+    """
+    from itertools import combinations
+    candidatas_validas = [c for c in candidatas if c['cobertura'] >= umbral_minimo]
+    if not candidatas_validas:
+        return {'seleccionadas': [], 'cobertura_total': 0.0, 'puntos_cubiertos': [], 'puntos_faltantes': puntos_usuario}
+    mejor_cobertura = 0
+    mejor_seleccion = []
+    mejores_puntos = []
+    for n in range(1, min(max_carreras, len(candidatas_validas)) + 1):
+        for combo in combinations(candidatas_validas, n):
+            puntos_cubiertos = set()
+            for c in combo:
+                puntos_cubiertos.update(c['puntos_cubiertos'])
+            cobertura = len(puntos_cubiertos) / len(puntos_usuario)
+            if cobertura > mejor_cobertura:
+                mejor_cobertura = cobertura
+                mejor_seleccion = [c['race_id'] for c in combo]
+                mejores_puntos = list(puntos_cubiertos)
+    return {
+        'seleccionadas': mejor_seleccion,
+        'cobertura_total': mejor_cobertura,
+        'puntos_cubiertos': mejores_puntos,
+        'puntos_faltantes': [p for p in puntos_usuario if p not in mejores_puntos]
+    }
+
+
 def extract_split_distance(split_name):
     """
     Extrae la distancia en km de un split normalizado.
@@ -189,9 +277,6 @@ def validar_calidad_datos(df, splits_requeridos,
         }
     }
     
-    # =============================================================
-    # 1. Verificar número mínimo de registros
-    # =============================================================
     if len(df) < umbral_min_registros:
         resultados['valido'] = False
         resultados['errores'].append(
@@ -200,9 +285,7 @@ def validar_calidad_datos(df, splits_requeridos,
     else:
         resultados['metricas']['n_registros_ok'] = True
     
-    # =============================================================
-    # 2. Verificar nulos por split
-    # =============================================================
+
     for split in splits_requeridos:
         if split in df.columns:
             pct_nulos = df[split].isna().mean()
@@ -224,9 +307,7 @@ def validar_calidad_datos(df, splits_requeridos,
                 f"Split '{split}' no encontrado en los datos"
             )
     
-    # =============================================================
-    # 4. Verificar rangos razonables (tiempos deben ser positivos)
-    # =============================================================
+    
     for split in splits_requeridos:
         if split in df.columns:
             valores = df[split].dropna()

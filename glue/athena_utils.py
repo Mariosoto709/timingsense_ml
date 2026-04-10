@@ -6,6 +6,7 @@ Funciones de Athena y Glue para el job (dependen de AWS)
 import time
 import boto3
 import re
+from datetime import datetime  # 🆕 AÑADIR
 from awsglue.utils import getResolvedOptions
 
 # ============================================================
@@ -22,6 +23,28 @@ S3_ATHENA_OUTPUT = "timingsense-athena-output-2026"
 athena = boto3.client("athena", region_name=REGION)
 s3 = boto3.client("s3")
 glue = boto3.client("glue", region_name=REGION)
+cloudwatch = boto3.client("cloudwatch", region_name=REGION)  # 🆕 AÑADIR
+
+
+# ============================================================
+# 🆕 FUNCIÓN PARA PUBLICAR MÉTRICA DE FALLO
+# ============================================================
+
+def publicar_metrica_athena_failed():
+    """Publica métrica de fallo en Athena a CloudWatch"""
+    try:
+        cloudwatch.put_metric_data(
+            Namespace='timingsense/Athena',
+            MetricData=[{
+                'MetricName': 'QueryFailed',
+                'Value': 1,
+                'Unit': 'Count',
+                'Timestamp': datetime.now()
+            }]
+        )
+        print(f"📊 Métrica CloudWatch publicada: Athena/QueryFailed=1")
+    except Exception as e:
+        print(f"⚠️ Error publicando métrica a CloudWatch: {e}")
 
 
 # ============================================================
@@ -36,22 +59,29 @@ def wait_for_query(execution_id):
         if state in ["SUCCEEDED", "FAILED", "CANCELLED"]:
             if state != "SUCCEEDED":
                 reason = response["QueryExecution"]["Status"].get("StateChangeReason", "Unknown")
+                # 🆕 PUBLICAR MÉTRICA CUANDO FALLA
+                publicar_metrica_athena_failed()
                 raise Exception(f"Query falló: {reason}")
             return
         time.sleep(2)
 
 
 def execute_athena_query(query):
-    response = athena.start_query_execution(
-        QueryString=query,
-        QueryExecutionContext={"Database": DATABASE},
-        ResultConfiguration={"OutputLocation": S3_OUTPUT},
-        WorkGroup=WORKGROUP
-    )
-    execution_id = response["QueryExecutionId"]
-    wait_for_query(execution_id)
-    result = athena.get_query_execution(QueryExecutionId=execution_id)
-    return result["QueryExecution"]["ResultConfiguration"]["OutputLocation"]
+    try:
+        response = athena.start_query_execution(
+            QueryString=query,
+            QueryExecutionContext={"Database": DATABASE},
+            ResultConfiguration={"OutputLocation": S3_OUTPUT},
+            WorkGroup=WORKGROUP
+        )
+        execution_id = response["QueryExecutionId"]
+        wait_for_query(execution_id)
+        result = athena.get_query_execution(QueryExecutionId=execution_id)
+        return result["QueryExecution"]["ResultConfiguration"]["OutputLocation"]
+    except Exception as e:
+        # 🆕 PUBLICAR MÉTRICA SI LA QUERY NI SIQUIERA ARRANCA
+        publicar_metrica_athena_failed()
+        raise e
 
 
 # ============================================================
