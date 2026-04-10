@@ -12,9 +12,7 @@ import importlib.util
 from datetime import datetime
 from unittest.mock import patch, MagicMock
 
-# =============================================================
-# IMPORTANTE: Añadir la ruta raíz para que encuentre glue_utils
-# =============================================================
+# Añadir la ruta raíz para que encuentre glue_utils
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../lambda/lambda_bdd_races/lambda_bdd_races.py'))
@@ -32,14 +30,14 @@ class TestLambdaBDDRacesEnhanced:
     # =============================================================
     
     @patch('boto3.client')
-    @patch('glue_utils.listar_carreras_disponibles')
-    @patch('glue_utils.cargar_catalogo_distancias')
-    @patch('glue_utils.calcular_cobertura_carrera')
-    @patch('glue_utils.buscar_mejor_combinacion_fallback')
+    @patch('lambda_bdd.listar_carreras_disponibles')
+    @patch('lambda_bdd.cargar_catalogo_distancias')
+    @patch('lambda_bdd.calcular_cobertura_carrera')
+    @patch('lambda_bdd.buscar_mejor_combinacion_fallback')
     def test_lambda_mixed_valid_invalid_carreras(self, mock_buscar, mock_calcular, mock_cargar, mock_listar, mock_boto):
-        """Mezcla de carreras válidas e inválidas - debe omitir solo las inválidas"""
         mock_boto.return_value = MagicMock()
-        mock_listar.return_value = ["carrera-2024"]
+        # Importante: el race_id debe empezar con el nombre_base de la carrera (Valida1)
+        mock_listar.return_value = ["Valida1-2024", "Valida2-2024"]  # Ahora coinciden
         mock_cargar.return_value = {"events": [{"name": "Maraton", "splits": [{"distance": 5000}]}]}
         mock_calcular.return_value = {
             'cobertura': 1.0,
@@ -48,7 +46,7 @@ class TestLambdaBDDRacesEnhanced:
             'evento_elegido': 'Maraton'
         }
         mock_buscar.return_value = {
-            'seleccionadas': ['carrera-2024'],
+            'seleccionadas': ['Valida1-2024'],
             'cobertura_total': 1.0,
             'puntos_cubiertos': [5000],
             'puntos_faltantes': []
@@ -72,10 +70,10 @@ class TestLambdaBDDRacesEnhanced:
         assert carreras_procesadas == ["Valida1-2025", "Valida2-2025", "Valida3-2025", "Valida4-2025"]
     
     @patch('boto3.client')
-    @patch('glue_utils.listar_carreras_disponibles')
-    @patch('glue_utils.cargar_catalogo_distancias')
-    @patch('glue_utils.calcular_cobertura_carrera')
-    @patch('glue_utils.buscar_mejor_combinacion_fallback')
+    @patch('lambda_bdd.listar_carreras_disponibles')
+    @patch('lambda_bdd.cargar_catalogo_distancias')
+    @patch('lambda_bdd.calcular_cobertura_carrera')
+    @patch('lambda_bdd.buscar_mejor_combinacion_fallback')
     def test_lambda_nombre_prioridad_sobre_carrera_nuevo_formato(self, mock_buscar, mock_calcular, mock_cargar, mock_listar, mock_boto):
         """En nuevo formato, 'nombre' tiene prioridad sobre 'carrera'"""
         mock_boto.return_value = MagicMock()
@@ -109,10 +107,10 @@ class TestLambdaBDDRacesEnhanced:
         assert result["carreras_config"][0]["carrera_objetivo"] == "NombrePrioritario-2025"
     
     @patch('boto3.client')
-    @patch('glue_utils.listar_carreras_disponibles')
-    @patch('glue_utils.cargar_catalogo_distancias')
-    @patch('glue_utils.calcular_cobertura_carrera')
-    @patch('glue_utils.buscar_mejor_combinacion_fallback')
+    @patch('lambda_bdd.listar_carreras_disponibles')
+    @patch('lambda_bdd.cargar_catalogo_distancias')
+    @patch('lambda_bdd.calcular_cobertura_carrera')
+    @patch('lambda_bdd.buscar_mejor_combinacion_fallback')
     def test_lambda_training_params_extreme_values(self, mock_buscar, mock_calcular, mock_cargar, mock_listar, mock_boto):
         """Valores extremos en training_params"""
         mock_boto.return_value = MagicMock()
@@ -155,6 +153,80 @@ class TestLambdaBDDRacesEnhanced:
         config = result["carreras_config"][0]
         
         assert config["training_params"] == training_params
+    
+    @patch('boto3.client')
+    @patch('lambda_bdd.listar_carreras_disponibles')
+    @patch('lambda_bdd.cargar_catalogo_distancias')
+    @patch('lambda_bdd.calcular_cobertura_carrera')
+    @patch('lambda_bdd.buscar_mejor_combinacion_fallback')
+    def test_lambda_nombre_none_usar_carrera(self, mock_buscar, mock_calcular, mock_cargar, mock_listar, mock_boto):
+        """Si 'nombre' es None, usa 'carrera'"""
+        mock_boto.return_value = MagicMock()
+        mock_listar.return_value = ["carrera-2024"]
+        mock_cargar.return_value = {"events": [{"name": "Maraton", "splits": [{"distance": 5000}]}]}
+        mock_calcular.return_value = {
+            'cobertura': 1.0,
+            'puntos_cubiertos': [5000],
+            'puntos_faltantes': [],
+            'evento_elegido': 'Maraton'
+        }
+        mock_buscar.return_value = {
+            'seleccionadas': ['carrera-2024'],
+            'cobertura_total': 1.0,
+            'puntos_cubiertos': [5000],
+            'puntos_faltantes': []
+        }
+        
+        event = {
+            "carreras": [
+                {
+                    "nombre": None,
+                    "carrera": "CarreraBackup-2025",
+                    "splits": ["km_5"]
+                }
+            ]
+        }
+        result = lambda_handler(event, None)
+        
+        assert result["num_modelos"] == 1
+        assert result["carreras_config"][0]["carrera_objetivo"] == "CarreraBackup-2025"
+    
+    @patch('boto3.client')
+    @patch('lambda_bdd.listar_carreras_disponibles')
+    @patch('lambda_bdd.cargar_catalogo_distancias')
+    @patch('lambda_bdd.calcular_cobertura_carrera')
+    @patch('lambda_bdd.buscar_mejor_combinacion_fallback')
+    def test_lambda_nombre_vacio_usar_carrera(self, mock_buscar, mock_calcular, mock_cargar, mock_listar, mock_boto):
+        """Si 'nombre' es string vacío, usa 'carrera'"""
+        mock_boto.return_value = MagicMock()
+        mock_listar.return_value = ["carrera-2024"]
+        mock_cargar.return_value = {"events": [{"name": "Maraton", "splits": [{"distance": 5000}]}]}
+        mock_calcular.return_value = {
+            'cobertura': 1.0,
+            'puntos_cubiertos': [5000],
+            'puntos_faltantes': [],
+            'evento_elegido': 'Maraton'
+        }
+        mock_buscar.return_value = {
+            'seleccionadas': ['carrera-2024'],
+            'cobertura_total': 1.0,
+            'puntos_cubiertos': [5000],
+            'puntos_faltantes': []
+        }
+        
+        event = {
+            "carreras": [
+                {
+                    "nombre": "",
+                    "carrera": "CarreraBackup-2025",
+                    "splits": ["km_5"]
+                }
+            ]
+        }
+        result = lambda_handler(event, None)
+        
+        assert result["num_modelos"] == 1
+        assert result["carreras_config"][0]["carrera_objetivo"] == "CarreraBackup-2025"
     
     # =============================================================
     # TESTS DE VALIDACIÓN (fallan ANTES de la selección, no necesitan mocks)
@@ -201,84 +273,6 @@ class TestLambdaBDDRacesEnhanced:
         with pytest.raises(ValueError) as exc_info:
             lambda_handler(event, None)
         assert "training_params debe ser un diccionario" in str(exc_info.value)
-    
-    # =============================================================
-    # TESTS CON NOMBRES NULL o VACÍOS (necesitan mocks porque la lambda intenta seleccionar)
-    # =============================================================
-    
-    @patch('boto3.client')
-    @patch('glue_utils.listar_carreras_disponibles')
-    @patch('glue_utils.cargar_catalogo_distancias')
-    @patch('glue_utils.calcular_cobertura_carrera')
-    @patch('glue_utils.buscar_mejor_combinacion_fallback')
-    def test_lambda_nombre_none_usar_carrera(self, mock_buscar, mock_calcular, mock_cargar, mock_listar, mock_boto):
-        """Si 'nombre' es None, usa 'carrera'"""
-        mock_boto.return_value = MagicMock()
-        mock_listar.return_value = ["carrera-2024"]
-        mock_cargar.return_value = {"events": [{"name": "Maraton", "splits": [{"distance": 5000}]}]}
-        mock_calcular.return_value = {
-            'cobertura': 1.0,
-            'puntos_cubiertos': [5000],
-            'puntos_faltantes': [],
-            'evento_elegido': 'Maraton'
-        }
-        mock_buscar.return_value = {
-            'seleccionadas': ['carrera-2024'],
-            'cobertura_total': 1.0,
-            'puntos_cubiertos': [5000],
-            'puntos_faltantes': []
-        }
-        
-        event = {
-            "carreras": [
-                {
-                    "nombre": None,
-                    "carrera": "CarreraBackup-2025",
-                    "splits": ["km_5"]
-                }
-            ]
-        }
-        result = lambda_handler(event, None)
-        
-        assert result["num_modelos"] == 1
-        assert result["carreras_config"][0]["carrera_objetivo"] == "CarreraBackup-2025"
-    
-    @patch('boto3.client')
-    @patch('glue_utils.listar_carreras_disponibles')
-    @patch('glue_utils.cargar_catalogo_distancias')
-    @patch('glue_utils.calcular_cobertura_carrera')
-    @patch('glue_utils.buscar_mejor_combinacion_fallback')
-    def test_lambda_nombre_vacio_usar_carrera(self, mock_buscar, mock_calcular, mock_cargar, mock_listar, mock_boto):
-        """Si 'nombre' es string vacío, usa 'carrera'"""
-        mock_boto.return_value = MagicMock()
-        mock_listar.return_value = ["carrera-2024"]
-        mock_cargar.return_value = {"events": [{"name": "Maraton", "splits": [{"distance": 5000}]}]}
-        mock_calcular.return_value = {
-            'cobertura': 1.0,
-            'puntos_cubiertos': [5000],
-            'puntos_faltantes': [],
-            'evento_elegido': 'Maraton'
-        }
-        mock_buscar.return_value = {
-            'seleccionadas': ['carrera-2024'],
-            'cobertura_total': 1.0,
-            'puntos_cubiertos': [5000],
-            'puntos_faltantes': []
-        }
-        
-        event = {
-            "carreras": [
-                {
-                    "nombre": "",
-                    "carrera": "CarreraBackup-2025",
-                    "splits": ["km_5"]
-                }
-            ]
-        }
-        result = lambda_handler(event, None)
-        
-        assert result["num_modelos"] == 1
-        assert result["carreras_config"][0]["carrera_objetivo"] == "CarreraBackup-2025"
 
 
 if __name__ == "__main__":
