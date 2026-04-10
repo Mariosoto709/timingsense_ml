@@ -307,18 +307,21 @@ def identificar_splits(df):
 
 
 def procesar_genero(df):
-    """Procesa columna gender a formato numérico"""
+    """Procesa columna gender a formato numérico (0: masculino, 1: femenino)"""
     if 'gender' not in df.columns:
         return df
     
-    if df['gender'].dtype == 'object':
+    # Intentar convertir a string primero para normalizar
+    if not pd.api.types.is_numeric_dtype(df['gender']):
+        # Mapeo de strings a números
         gender_map = {
-            'M': 0, 'F': 1, 'male': 0, 'female': 1,
-            'Male': 0, 'Female': 1, 'MALE': 0, 'FEMALE': 1
+            'M': 0, 'm': 0, 'male': 0, 'Male': 0, 'MALE': 0,
+            'F': 1, 'f': 1, 'female': 1, 'Female': 1, 'FEMALE': 1
         }
-        df['gender'] = df['gender'].map(gender_map).fillna(0).astype(int)
+        df['gender'] = df['gender'].astype(str).map(gender_map).fillna(0).astype(int)
     else:
-        df['gender'] = (df['gender'] % 2).astype(int)
+        # Ya es numérico, normalizar a 0 o 1
+        df['gender'] = (df['gender'].astype(int) % 2).astype(int)
     
     return df
 
@@ -484,28 +487,14 @@ def crear_model_package_group(carrera):
 def registrar_modelo_en_registry(modelo_id, metricas, model_s3_uri, carrera, timestamp_unico, validacion):
     """
     Registra un modelo entrenado en SageMaker Model Registry.
-    
-    Args:
-        modelo_id: identificador del modelo (ej: "km_10_desde_km_5")
-        metricas: diccionario con métricas del modelo
-        model_s3_uri: URI S3 donde está guardado el modelo (.joblib)
-        carrera: nombre de la carrera
-        timestamp_unico: timestamp de la ejecución
-        validacion: diccionario con resultados de validación
-    
-    Returns:
-        response de SageMaker o None si falla
     """
     try:
         import boto3
-        import json
-        from datetime import datetime
-        
         sm_client = boto3.client('sagemaker')
         
         nombre_grupo = f"timingsense-{carrera.replace('-', '_').replace(' ', '_')}"
         
-        # Preparar métricas para el registro
+        # Preparar métricas
         metricas_dict = [
             {'Name': 'mae', 'Value': metricas.get('mae_mean', 0)},
             {'Name': 'mae_std', 'Value': metricas.get('mae_std', 0)},
@@ -514,33 +503,31 @@ def registrar_modelo_en_registry(modelo_id, metricas, model_s3_uri, carrera, tim
             {'Name': 'calidad', 'Value': validacion.get('puntuacion_calidad', 0)}
         ]
         
-        # Añadir métricas de validación si existen
+        # Métricas adicionales de validación
         if 'niveles' in validacion:
             nivel1 = validacion['niveles'].get('mejor_que_naive', {})
             nivel2 = validacion['niveles'].get('consistencia_error', {})
             nivel3 = validacion['niveles'].get('sin_outliers', {})
-            
             metricas_dict.append({'Name': 'mejora_sobre_naive', 'Value': nivel1.get('mejora', 0)})
             metricas_dict.append({'Name': 'cv_error', 'Value': nivel2.get('cv', 0)})
             metricas_dict.append({'Name': 'outliers_ratio', 'Value': nivel3.get('relacion', 0)})
         
-        # Determinar estado de aprobación
-        # Si el modelo pasó validación (calidad > 60), lo dejamos pendiente de aprobación manual
-        # Si no pasó, lo registramos como rechazado
-        if validacion.get('aprobado', False) and validacion.get('puntuacion_calidad', 0) >= 60:
+        # Estados automáticos inteligentes
+        calidad = validacion.get('puntuacion_calidad', 0)
+        if calidad >= 90:
+            approval_status = "Approved"
+        elif calidad >= 70:
             approval_status = "PendingManualApproval"
         else:
             approval_status = "Rejected"
         
-        # Descripción del modelo
         descripcion = (
             f"Modelo {modelo_id} - "
             f"MAE: {metricas.get('mae_mean', 0):.2f}s, "
-            f"Calidad: {validacion.get('puntuacion_calidad', 0)}/100, "
+            f"Calidad: {calidad}/100, "
             f"Muestras: {metricas.get('n_samples', 0)}"
         )
         
-        # Crear el modelo package
         response = sm_client.create_model_package(
             ModelPackageGroupName=nombre_grupo,
             ModelPackageDescription=descripcion,
@@ -578,15 +565,12 @@ def registrar_modelo_en_registry(modelo_id, metricas, model_s3_uri, carrera, tim
                 'posicion_atleta': metricas.get('posicion_atleta', ''),
                 'carrera': carrera,
                 'timestamp': timestamp_unico,
-                'calidad': str(validacion.get('puntuacion_calidad', 0)),
+                'calidad': str(calidad),
                 'es_extrapolado': str(metricas.get('es_extrapolado', False))
             }
         )
         
-        logger.info(f"   📦 Modelo registrado en SageMaker Registry: {modelo_id}")
-        logger.info(f"      Estado: {approval_status}")
-        logger.info(f"      ARN: {response['ModelPackageArn']}")
-        
+        logger.info(f"   📦 Modelo registrado: {modelo_id} | Estado: {approval_status} | Calidad: {calidad}/100")
         return response
         
     except Exception as e:
@@ -1265,6 +1249,58 @@ def main():
     logger.info("\n" + "="*80)
     logger.info("✅ ENTRENAMIENTO COMPLETADO")
     logger.info("="*80)
+
+    # =============================================================
+    # 🆕 PUBLICAR MÉTRICAS A CLOUDWATCH PARA ALARMAS
+    # =============================================================
+    try:
+        import boto3
+        from datetime import datetime
+        
+        cloudwatch = boto3.client('cloudwatch')
+        
+        # Calcular modelos aprobados (calidad >= 90)
+        modelos_aprobados_cloudwatch = sum(1 for m in metricas_totales if m.get('calidad', 0) >= 90)
+        modelos_totales = len(metricas_totales)
+        
+        # Calcular tasa de aprobación
+        tasa_aprobacion = (modelos_aprobados_cloudwatch / modelos_totales * 100) if modelos_totales > 0 else 0
+        
+        # Publicar MÚLTIPLES métricas
+        cloudwatch.put_metric_data(
+            Namespace='timingsense/SageMaker',
+            MetricData=[
+                {
+                    'MetricName': 'ModelosAprobados',
+                    'Value': modelos_aprobados_cloudwatch,
+                    'Unit': 'Count',
+                    'Timestamp': datetime.now(),
+                    'Dimensions': [{'Name': 'Carrera', 'Value': args.carrera}]
+                },
+                {
+                    'MetricName': 'ModelosTotales',
+                    'Value': modelos_totales,
+                    'Unit': 'Count',
+                    'Timestamp': datetime.now(),
+                    'Dimensions': [{'Name': 'Carrera', 'Value': args.carrera}]
+                },
+                {
+                    'MetricName': 'TasaAprobacion',
+                    'Value': tasa_aprobacion,
+                    'Unit': 'Percent',
+                    'Timestamp': datetime.now(),
+                    'Dimensions': [{'Name': 'Carrera', 'Value': args.carrera}]
+                }
+            ]
+        )
+        
+        logger.info(f"📊 Métricas publicadas a CloudWatch:")
+        logger.info(f"   - ModelosAprobados: {modelos_aprobados_cloudwatch}")
+        logger.info(f"   - ModelosTotales: {modelos_totales}")
+        logger.info(f"   - TasaAprobacion: {tasa_aprobacion:.1f}%")
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Error publicando métricas a CloudWatch: {e}")
     
     return 0
 
