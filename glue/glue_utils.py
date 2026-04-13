@@ -7,7 +7,7 @@ Estas funciones se pueden testear localmente sin necesidad de AWS.
 
 # ========== NUEVAS FUNCIONES PARA SELECCIÓN DE CARRERAS ==========
 
-def cargar_catalogo_distancias(race_id, bucket='timingsense-races-config', prefix='splits_catalog/distancias/'):
+def cargar_catalogo_distancias(race_id, bucket='timingsense-config', prefix='splits_catalog/distancias/'):
     """Carga el catálogo de distancias de una carrera desde S3."""
     import boto3, json
     s3 = boto3.client('s3')
@@ -19,7 +19,7 @@ def cargar_catalogo_distancias(race_id, bucket='timingsense-races-config', prefi
         print(f"⚠️ No se pudo cargar catálogo para {race_id}: {e}")
         return None
 
-def listar_carreras_disponibles(bucket='timingsense-races-txt', prefix='pre_etl/splits_catalog/distancias/'):
+def listar_carreras_disponibles(bucket='timingsense-config', prefix='splits_catalog/distancias/'):
     """Lista todos los race_id disponibles en el catálogo."""
     import boto3, re
     s3 = boto3.client('s3')
@@ -36,31 +36,110 @@ def listar_carreras_disponibles(bucket='timingsense-races-txt', prefix='pre_etl/
         print(f"⚠️ Error listando catálogos: {e}")
         return []
 
-def calcular_cobertura_carrera(catalogo, puntos_usuario, tolerancia=5):
+def calcular_cobertura_carrera(catalogo, puntos_usuario, tolerancia=10, event_id_filter=None):
     """
     Calcula qué porcentaje de los puntos del usuario cubre una carrera.
-    puntos_usuario: lista de distancias en metros.
-    Retorna dict con cobertura, puntos_cubiertos, puntos_faltantes, evento_elegido.
+    
+    Args:
+        catalogo: diccionario con el catálogo de la carrera
+        puntos_usuario: lista de distancias en metros
+        tolerancia: margen en metros para considerar un split como coincidente (default 10m)
+        event_id_filter: nombre del evento a filtrar (ej: "Marató", "Cadires", "10K")
+    
+    Retorna:
+        dict con cobertura, puntos_cubiertos, puntos_faltantes, evento_elegido
     """
+    print("🚀 VERSIÓN 2.3 - Con soporte para event_id_filter")
+    print(f"   Puntos usuario: {puntos_usuario}")
+    print(f"   Tolerancia: {tolerancia}m")
+    print(f"   Filtro evento: {event_id_filter}")
+    
+    # Extraer distancias por evento desde la lista 'splits'
+    distancias_por_evento = {}
+    
+    if 'splits' in catalogo:
+        for split in catalogo['splits']:
+            event_name = split.get('event')
+            distance = split.get('distance')
+            
+            if event_name and distance is not None:
+                if event_name not in distancias_por_evento:
+                    distancias_por_evento[event_name] = set()
+                distancias_por_evento[event_name].add(float(distance))
+    
+    print(f"   Eventos disponibles: {list(distancias_por_evento.keys())}")
+    
+    # Filtrar por event_id_filter si se especificó
+    if event_id_filter:
+        # Normalizar comparación (quitar acentos, etc. si es necesario)
+        eventos_filtrados = {}
+        for event_name, distancias in distancias_por_evento.items():
+            # Comparación exacta o normalizada
+            if event_name == event_id_filter or event_name.lower() == event_id_filter.lower():
+                eventos_filtrados[event_name] = distancias
+                print(f"   ✅ Filtrado al evento: {event_name}")
+        
+        if not eventos_filtrados:
+            print(f"   ⚠️ No se encontró el evento '{event_id_filter}'. Eventos disponibles: {list(distancias_por_evento.keys())}")
+            # Si no encuentra el filtro, usa todos los eventos (o podrías retornar 0%)
+            eventos_filtrados = distancias_por_evento
+    else:
+        eventos_filtrados = distancias_por_evento
+    
+    # Si no hay eventos, usar todas las distancias del diccionario 'distancias'
+    if not eventos_filtrados:
+        # Fallback: usar el diccionario 'distancias'
+        todas_distancias = set()
+        if 'distancias' in catalogo:
+            for key, dist in catalogo['distancias'].items():
+                if isinstance(dist, (int, float)):
+                    todas_distancias.add(float(dist))
+        if todas_distancias:
+            eventos_filtrados = {'todos': todas_distancias}
+    
     mejor_evento = None
     mejor_puntuacion = 0
     mejor_puntos_cubiertos = []
-    for event in catalogo.get('events', []):
-        distancias_evento = [split['distance'] for split in event.get('splits', []) if 'distance' in split]
+    
+    for event_name, distancias_evento in eventos_filtrados.items():
+        print(f"\n📌 Evaluando evento: {event_name}")
+        print(f"   Distancias: {len(distancias_evento)} splits")
+        
+        # Calcular qué puntos del usuario están cubiertos
         cubiertos = []
         for p in puntos_usuario:
-            if any(abs(p - d) <= tolerancia for d in distancias_evento):
-                cubiertos.append(p)
+            encontrado = False
+            # Ordenar para mejor debug
+            distancias_ordenadas = sorted(distancias_evento)
+            for d in distancias_ordenadas:
+                if abs(p - d) <= tolerancia:
+                    cubiertos.append(p)
+                    encontrado = True
+                    print(f"   ✅ {p}m ≈ {d}m (dif: {abs(p-d)}m)")
+                    break
+            if not encontrado:
+                if distancias_ordenadas:
+                    cercana = min(distancias_ordenadas, key=lambda x: abs(x - p))
+                    print(f"   ❌ {p}m -> más cercana: {cercana}m (dif: {abs(p-cercana)}m)")
+                else:
+                    print(f"   ❌ {p}m -> no hay distancias en este evento")
+        
         puntuacion = len(cubiertos) / len(puntos_usuario) if puntos_usuario else 0
+        print(f"   Cobertura: {puntuacion:.1%}")
+        
         if puntuacion > mejor_puntuacion:
             mejor_puntuacion = puntuacion
-            mejor_evento = event.get('name')
+            mejor_evento = event_name if event_name != 'todos' else None
             mejor_puntos_cubiertos = cubiertos
+    
+    print(f"\n📊 MEJOR RESULTADO: evento='{mejor_evento}', cobertura={mejor_puntuacion:.1%}")
+    
     return {
         'cobertura': mejor_puntuacion,
         'puntos_cubiertos': mejor_puntos_cubiertos,
         'puntos_faltantes': [p for p in puntos_usuario if p not in mejor_puntos_cubiertos],
-        'evento_elegido': mejor_evento
+        'evento_elegido': mejor_evento,
+        'splits_directos': []
     }
 
 def buscar_mejor_combinacion_fallback(candidatas, puntos_usuario, max_carreras=3, umbral_minimo=0.70):
