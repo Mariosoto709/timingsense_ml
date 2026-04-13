@@ -7,7 +7,7 @@ Estas funciones se pueden testear localmente sin necesidad de AWS.
 
 # ========== NUEVAS FUNCIONES PARA SELECCIÓN DE CARRERAS ==========
 
-def cargar_catalogo_distancias(race_id, bucket='timingsense-races-txt', prefix='pre_etl/splits_catalog/distancias/'):
+def cargar_catalogo_distancias(race_id, bucket='timingsense-races-config', prefix='splits_catalog/distancias/'):
     """Carga el catálogo de distancias de una carrera desde S3."""
     import boto3, json
     s3 = boto3.client('s3')
