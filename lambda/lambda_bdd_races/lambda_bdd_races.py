@@ -54,23 +54,10 @@ def lambda_handler(event, context):
             # =============================================================
             if not isinstance(splits_requeridos, list):
                 raise ValueError(
-                    f"splits debe ser una lista de strings, "
+                    f"splits debe ser una lista, "
                     f"recibido: {type(splits_requeridos).__name__} = {splits_requeridos}"
                 )
             
-            for i, split in enumerate(splits_requeridos):
-                if not isinstance(split, str):
-                    raise ValueError(
-                        f"Cada split debe ser un string, "
-                        f"pero el elemento {i} es {type(split).__name__} = {split}"
-                    )
-            
-            if not isinstance(training_params, dict):
-                raise ValueError(
-                    f"training_params debe ser un diccionario, "
-                    f"recibido: {type(training_params).__name__} = {training_params}"
-                )
-
             if not carrera_objetivo or not splits_requeridos:
                 continue
 
@@ -78,21 +65,66 @@ def lambda_handler(event, context):
                 raise ValueError(f"tipo_modelo debe ser 'interpolacion' o 'prediccion', recibido: {tipo_modelo}")
 
             # =============================================================
-            # CONVERTIR SPLITS A DISTANCIAS (metros)
+            # PROCESAR SPLITS: AHORA PUEDEN SER STRINGS O DICCIONARIOS
             # =============================================================
             puntos_usuario = []
-            for split in splits_requeridos:
-                dist_km = extract_split_distance(split)
-                if dist_km is not None:
-                    puntos_usuario.append(int(dist_km * 1000))  # km -> metros
-                elif split.lower() == 'start':
-                    puntos_usuario.append(0)
-                elif split.lower() == 'finish':
-                    puntos_usuario.append(42195)
+            splits_normalizados = []  # Guardar los nombres originales/normalizados
+            
+            for i, split in enumerate(splits_requeridos):
+                distancia = None
+                nombre_split = None
+                
+                # Caso 1: Split como string simple "5k", "10k", "start", "finish"
+                if isinstance(split, str):
+                    nombre_split = split
+                    
+                    # Intentar obtener distancia usando la función existente
+                    dist_km = extract_split_distance(split)
+                    if dist_km is not None:
+                        distancia = int(dist_km * 1000)  # km -> metros
+                    elif split.lower() == 'start':
+                        distancia = 0
+                    elif split.lower() == 'finish':
+                        distancia = 42195
+                    else:
+                        raise ValueError(f"Split '{split}' no se puede convertir a distancia automáticamente. Usa formato diccionario con 'nombre' y 'distancia_metros'")
+                
+                # Caso 2: Split como diccionario {"nombre": "5k", "distancia_metros": 5000}
+                elif isinstance(split, dict):
+                    nombre_split = split.get('nombre')
+                    distancia = split.get('distancia_metros')
+                    
+                    if not nombre_split:
+                        raise ValueError(f"El diccionario en posición {i} debe tener clave 'nombre'")
+                    
+                    if distancia is None:
+                        raise ValueError(f"El diccionario en posición {i} debe tener clave 'distancia_metros'")
+                    
+                    if not isinstance(distancia, (int, float)):
+                        raise ValueError(f"La distancia para '{nombre_split}' debe ser numérica, recibido: {type(distancia).__name__}")
+                    
+                    if distancia < 0:
+                        raise ValueError(f"La distancia para '{nombre_split}' no puede ser negativa: {distancia}")
+                    
+                    distancia = int(distancia)  # Asegurar entero
+                
                 else:
-                    raise ValueError(f"Split '{split}' no se puede convertir a distancia")
+                    raise ValueError(
+                        f"Cada split debe ser string o diccionario, "
+                        f"pero el elemento {i} es {type(split).__name__} = {split}"
+                    )
+                
+                # Guardar el punto
+                puntos_usuario.append(distancia)
+                splits_normalizados.append({
+                    'nombre': nombre_split,
+                    'distancia_metros': distancia
+                })
+                
+                print(f"   Split {i+1}: '{nombre_split}' -> {distancia} metros")
 
             print(f"📏 Puntos de control del usuario (metros): {puntos_usuario}")
+            print(f"📋 Splits normalizados: {json.dumps(splits_normalizados, indent=2)}")
 
             # =============================================================
             # EXTRAER NOMBRE_BASE Y AÑO DE LA CARRERA FUTURA
@@ -260,7 +292,8 @@ def lambda_handler(event, context):
             # =============================================================
             carreras_config.append({
                 'carrera_objetivo': carrera_objetivo,
-                'splits': splits_requeridos,
+                'splits': splits_requeridos,  # Guardamos los splits originales
+                'splits_normalizados': splits_normalizados,  # NUEVO: guardamos nombres y distancias
                 'puntos_usuario': puntos_usuario,
                 'carreras_historicas_detalle': carreras_historicas_detalle,
                 'tipo_seleccion': tipo_seleccion,
