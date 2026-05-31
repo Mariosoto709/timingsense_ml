@@ -24,7 +24,7 @@ class TestNivel1MejorQueNaive:
 #         assert resultado['aprueba'] == True
 #         assert resultado['mejora'] > 0
 
-    def test_smoke():
+    def test_smoke(self):
         assert True
 
 #     def test_modelo_peor(self):
