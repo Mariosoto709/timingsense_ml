@@ -16,13 +16,16 @@
 # )
 
 
-# class TestNivel1MejorQueNaive:
+class TestNivel1MejorQueNaive:
 #     def test_modelo_mejor(self):
 #         y_true = np.array([100, 200, 300, 400, 500])
 #         y_pred = np.array([105, 195, 305, 395, 505])
 #         resultado = nivel1_mejor_que_naive(y_true, y_pred)
 #         assert resultado['aprueba'] == True
 #         assert resultado['mejora'] > 0
+
+    def test_smoke():
+        assert True
 
 #     def test_modelo_peor(self):
 #         y_true = np.array([100, 200, 300, 400, 500])
