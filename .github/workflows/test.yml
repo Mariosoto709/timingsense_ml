@@ -21,11 +21,22 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install pytest pytest-cov pandas numpy scikit-learn xgboost joblib boto3
+        pip install pytest pytest-cov pytest-mock pandas numpy scikit-learn xgboost joblib boto3
 
     - name: Run unit tests
       run: |
-        pytest tests/unit/ -v
+        pytest tests/unit/ -v --cov=lambda --cov-report=xml --cov-report=term-missing --cov-fail-under=85
+
+    # 🆕 NUEVO: Tests específicos para nueva lambda
+    - name: Run Lambda Registrar Experiments tests
+      run: |
+        pytest tests/unit/test_lambda_registrar_experiments.py -v
+
+    # 📊 Coverage report
+    - name: Coverage summary
+      run: |
+        coverage report --skip-covered
+        echo "Coverage report generated ✅"
 
     # =============================================================
     # EMPAQUETAR ARTEFACTOS (solo para develop)
@@ -42,14 +53,17 @@ jobs:
         zip -r ../../lambda-procesar-salida-glue.zip .
         cd ../..
         
+        # 🆕 NUEVO: Empaquetar lambda_registrar_experiments
+        cd lambda/lambda_registrar_experiments
+        zip -r ../../lambda-registrar-experiments.zip .
+        cd ../..
+        
         # Empaquetar scripts de SageMaker
         cd sagemaker
         tar -czf ../sagemaker-scripts.tar.gz train_interpolacion.py train_prediccion.py
         cd ..
         
-        # =============================================================
-        # NUEVO: Empaquetar scripts de Glue (todos juntos)
-        # =============================================================
+        # Empaquetar scripts de Glue
         cd glue
         zip -r ../glue-scripts.zip glue_utils.py athena_utils.py create_training_table.py
         cd ..
@@ -66,16 +80,15 @@ jobs:
         # Subir Lambdas
         aws s3 cp lambda-bdd-races.zip s3://timingsense-artifacts/builds/${{ github.sha }}/lambda-bdd-races.zip
         aws s3 cp lambda-procesar-salida-glue.zip s3://timingsense-artifacts/builds/${{ github.sha }}/lambda-procesar-salida-glue.zip
+        aws s3 cp lambda-registrar-experiments.zip s3://timingsense-artifacts/builds/${{ github.sha }}/lambda-registrar-experiments.zip
         
         # Subir scripts SageMaker
         aws s3 cp sagemaker-scripts.tar.gz s3://timingsense-artifacts/builds/${{ github.sha }}/sagemaker-scripts.tar.gz
         
-        # =============================================================
-        # NUEVO: Subir scripts de Glue (ZIP completo y archivos sueltos)
-        # =============================================================
+        # Subir scripts de Glue
         aws s3 cp glue-scripts.zip s3://timingsense-artifacts/builds/${{ github.sha }}/glue-scripts.zip
         
-        # También subir archivos sueltos para fácil acceso
+        # Archivos sueltos para fácil acceso
         aws s3 cp glue/glue_utils.py s3://timingsense-scripts/glue/glue_utils.py
         aws s3 cp glue/athena_utils.py s3://timingsense-scripts/glue/athena_utils.py
         aws s3 cp glue/create_training_table.py s3://timingsense-scripts/glue/create_training_table.py
@@ -83,6 +96,7 @@ jobs:
         # Actualizar "latest"
         aws s3 cp lambda-bdd-races.zip s3://timingsense-artifacts/builds/latest/lambda-bdd-races.zip
         aws s3 cp lambda-procesar-salida-glue.zip s3://timingsense-artifacts/builds/latest/lambda-procesar-salida-glue.zip
+        aws s3 cp lambda-registrar-experiments.zip s3://timingsense-artifacts/builds/latest/lambda-registrar-experiments.zip
         aws s3 cp sagemaker-scripts.tar.gz s3://timingsense-artifacts/builds/latest/sagemaker-scripts.tar.gz
         aws s3 cp glue-scripts.zip s3://timingsense-artifacts/builds/latest/glue-scripts.zip
         

@@ -4,9 +4,6 @@ Funciones auxiliares para el job Glue (sin dependencias de AWS)
 Estas funciones se pueden testear localmente sin necesidad de AWS.
 """
 
-
-# ========== NUEVAS FUNCIONES PARA SELECCIÓN DE CARRERAS ==========
-
 def cargar_catalogo_distancias(race_id, bucket='timingsense-config', prefix='splits_catalog/distancias/'):
     """Carga el catálogo de distancias de una carrera desde S3."""
     import boto3, json
@@ -16,22 +13,39 @@ def cargar_catalogo_distancias(race_id, bucket='timingsense-config', prefix='spl
         response = s3.get_object(Bucket=bucket, Key=key)
         return json.loads(response['Body'].read())
     except Exception as e:
-        print(f"⚠️ No se pudo cargar catálogo para {race_id}: {e}")
+        print(f"No se pudo cargar catálogo para {race_id}: {e}")
         return None
 
 def listar_carreras_disponibles(bucket='timingsense-config', prefix='splits_catalog/distancias/'):
-    """Lista todos los race_id disponibles en el catálogo."""
-    import boto3, re
+    """
+    Lista todos los race_id disponibles en el catálogo.
+    Solo considera archivos .json directamente en la carpeta prefix (ignora subcarpetas).
+    """
+    import boto3
     s3 = boto3.client('s3')
     try:
-        response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+        # Usar Delimiter='/' para NO listar recursivamente
+        response = s3.list_objects_v2(
+            Bucket=bucket, 
+            Prefix=prefix,
+            Delimiter='/'  # ← CLAVE: No entra en subcarpetas
+        )
+        
         race_ids = []
+        
+        # Solo procesar objetos en el nivel actual (no subcarpetas)
         for obj in response.get('Contents', []):
             key = obj['Key']
-            match = re.search(r'([^/]+)\.json$', key)
-            if match:
-                race_ids.append(match.group(1))
+            # Extraer el nombre del archivo sin la ruta
+            filename = key[len(prefix):]  # Quitar el prefijo
+            
+            # Solo si es un archivo .json y no contiene '/' (subcarpeta)
+            if filename.endswith('.json') and '/' not in filename:
+                race_id = filename[:-5]  # Quitar '.json'
+                race_ids.append(race_id)
+        
         return race_ids
+        
     except Exception as e:
         print(f"⚠️ Error listando catálogos: {e}")
         return []

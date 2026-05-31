@@ -1,0 +1,14 @@
+{
+  "Command": {
+    "Name": "glueetl",
+    "ScriptLocation": "s3://timingsense-scripts/glue/create_training_table.py",
+    "PythonVersion": "3"
+  },
+  "Role": "arn:aws:iam::515358862381:role/AWSGlueServiceRole-ETLJob",
+  "GlueVersion": "5.0",
+  "WorkerType": "G.1X",
+  "NumberOfWorkers": 10,
+  "DefaultArguments": {
+    "--extra-py-files": "s3://timingsense-scripts/glue/glue_utils.py,s3://timingsense-scripts/glue/athena_utils.py"
+  }
+}

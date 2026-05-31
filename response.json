@@ -1,0 +1,1 @@
+{"modelos": [{"carrera": "zurich-marato-barcelona-2026", "carpeta_modelo": "zurich-marato-barcelona-2026-test-real", "data_s3_path": "s3://timingsense-athena-output-2026/modelos/zurich-marato-barcelona-2026-test-real/data/", "tabla_generada": "modelo_zurich_marato_barcelona_2026_test_real", "splits": 12, "carreras_usadas": 1}]}

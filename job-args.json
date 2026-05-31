@@ -1,0 +1,4 @@
+{
+  "--carreras_json": "[{\"carrera_objetivo\":\"test-2024\",\"splits\":[\"km_5\",\"km_10\"]}]",
+  "--timestamp_unico": "test"
+}

@@ -29,9 +29,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger('timingsense')
 
-# =============================================================
-# FUNCIONES PARA MANEJAR METADATA DE INTERPOLACIÓN
-# =============================================================
 
 def extract_split_distance(split_name):
     """
@@ -43,7 +40,6 @@ def extract_split_distance(split_name):
     
     split_lower = split_name.lower()
     
-    # Splits especiales con distancia conocida
     if split_lower == 'half':
         return 21.0975
     elif split_lower == 'finish':
@@ -51,10 +47,8 @@ def extract_split_distance(split_name):
     elif split_lower == 'start':
         return 0.0
     
-    # Splits km_X
     if split_lower.startswith('km_'):
         try:
-            # Convertir 'km_5' → 5.0, 'km_18_2' → 18.2
             num_str = split_lower[3:].replace('_', '.')
             return float(num_str)
         except:
@@ -463,7 +457,7 @@ def crear_model_package_group(carrera):
         import boto3
         sm_client = boto3.client('sagemaker')
         
-        nombre_grupo = f"timingsense-{carrera.replace('-', '_').replace(' ', '_')}"
+        nombre_grupo = f"timingsense-{carrera.replace('-', '_').replace(' ', '_')}_{evento.replace(' ', '_')}"
         
         response = sm_client.create_model_package_group(
             ModelPackageGroupName=nombre_grupo,
@@ -512,12 +506,10 @@ def registrar_modelo_en_registry(modelo_id, metricas, model_s3_uri, carrera, tim
             metricas_dict.append({'Name': 'cv_error', 'Value': nivel2.get('cv', 0)})
             metricas_dict.append({'Name': 'outliers_ratio', 'Value': nivel3.get('relacion', 0)})
         
-        # Estados automáticos inteligentes
+        # ✅ CÓDIGO NUEVO
         calidad = validacion.get('puntuacion_calidad', 0)
-        if calidad >= 90:
+        if calidad >= 70:
             approval_status = "Approved"
-        elif calidad >= 70:
-            approval_status = "PendingManualApproval"
         else:
             approval_status = "Rejected"
         
@@ -564,6 +556,7 @@ def registrar_modelo_en_registry(modelo_id, metricas, model_s3_uri, carrera, tim
                 'split_objetivo': metricas.get('split_objetivo', ''),
                 'posicion_atleta': metricas.get('posicion_atleta', ''),
                 'carrera': carrera,
+                'evento': args.evento,  # ← NUEVO (necesitas pasar evento)
                 'timestamp': timestamp_unico,
                 'calidad': str(calidad),
                 'es_extrapolado': str(metricas.get('es_extrapolado', False))
@@ -915,6 +908,9 @@ def main():
     
     parser = argparse.ArgumentParser()
     parser.add_argument('--carrera', type=str, required=True)
+    parser.add_argument('--evento', type=str, required=True)
+    parser.add_argument('--tipo-modelo', type=str, default='interpolacion', choices=['interpolacion', 'prediccion'])
+    parser.add_argument('--splits', type=str, default='[]')
     parser.add_argument('--n-estimators', type=int, default=100)
     parser.add_argument('--max-depth', type=int, default=10)
     parser.add_argument('--n-folds', type=int, default=5)
@@ -925,14 +921,19 @@ def main():
     
     args, unknown = parser.parse_known_args()
     
-    # Generar timestamp único para esta ejecución
+    # Parsear splits si vienen como JSON string
+    splits_objetivo = json.loads(args.splits) if args.splits and args.splits != '[]' else []
+    
     timestamp_unico = datetime.now().strftime("%Y%m%d-%H%M%S")
     
     logger.info("="*80)
-    logger.info("🚀 ENTRENAMIENTO DE MODELOS DE INTERPOLACIÓN")
+    logger.info(f"🚀 ENTRENAMIENTO DE MODELOS - {args.tipo_modelo.upper()}")
     logger.info("="*80)
     logger.info(f"📌 Carrera: {args.carrera}")
-    logger.info(f"🕒 Timestamp único: {timestamp_unico}")
+    logger.info(f"📌 Evento: {args.evento}")
+    logger.info(f"📌 Tipo: {args.tipo_modelo}")
+    logger.info(f"📌 Splits objetivo: {splits_objetivo}")
+    logger.info(f"🕒 Timestamp: {timestamp_unico}")
     
     # =============================================================
     # CARGAR DATOS Y METADATA
@@ -941,26 +942,37 @@ def main():
     df = load_data_from_local(train_dir)
     logger.info(f"✅ Datos cargados: {len(df)} registros")
     
-    # Crear grupo de modelos en SageMaker Registry
-    crear_model_package_group(args.carrera)
+    # Crear grupo de modelos en SageMaker Registry (con tipo, carrera y evento)
+    nombre_grupo = f"timingsense-{args.tipo_modelo}-{args.carrera.replace('-', '_').replace(' ', '_')}_{args.evento.replace(' ', '_')}"
+    try:
+        sm_client = boto3.client('sagemaker')
+        sm_client.create_model_package_group(
+            ModelPackageGroupName=nombre_grupo,
+            ModelPackageGroupDescription=f"Modelos de {args.tipo_modelo} para {args.carrera} - {args.evento}",
+            Tags=[
+                {'Key': 'proyecto', 'Value': 'timingsense'},
+                {'Key': 'tipo_modelo', 'Value': args.tipo_modelo},
+                {'Key': 'carrera', 'Value': args.carrera},
+                {'Key': 'evento', 'Value': args.evento}
+            ]
+        )
+        logger.info(f"✅ Grupo de modelos creado: {nombre_grupo}")
+    except Exception as e:
+        if 'AlreadyExistsException' in str(type(e)):
+            logger.info(f"ℹ️ Grupo de modelos ya existe para {args.carrera}/{args.evento}/{args.tipo_modelo}")
+        else:
+            logger.warning(f"⚠️ Error creando grupo de modelos: {e}")
     
     # =============================================================
-    # 🟢🟢🟢 RENOMBRAR COLUMNAS INMEDIATAMENTE 🟢🟢🟢
+    # RENOMBRAR COLUMNAS
     # =============================================================
     for col in df.columns:
         if '.' in col:
-            nuevo_nombre = col.replace('.', '_')
-            df.rename(columns={col: nuevo_nombre}, inplace=True)
-            logger.info(f"🔄 Columna renombrada: {col} → {nuevo_nombre}")
+            df.rename(columns={col: col.replace('.', '_')}, inplace=True)
+            logger.info(f"🔄 Columna renombrada: {col} → {col.replace('.', '_')}")
     
-    # También renombrar si hay columnas con guiones o espacios
     for col in df.columns:
-        nuevo_nombre = col
-        if '-' in col:
-            nuevo_nombre = col.replace('-', '_')
-        if ' ' in col:
-            nuevo_nombre = col.replace(' ', '_')
-        
+        nuevo_nombre = col.replace('-', '_').replace(' ', '_')
         if nuevo_nombre != col:
             df.rename(columns={col: nuevo_nombre}, inplace=True)
             logger.info(f"🔄 Columna renombrada: {col} → {nuevo_nombre}")
@@ -984,7 +996,7 @@ def main():
         log_split_analysis(metadata, split_cols_ordenados)
     
     # =============================================================
-    # ENTRENAR MODELOS
+    # ENTRENAR MODELOS SEGÚN TIPO
     # =============================================================
     model_params = {
         'n_estimators': args.n_estimators,
@@ -999,131 +1011,269 @@ def main():
     modelos_guardados = {}
     metricas_totales = []
     validaciones_totales = []
-    splits_extrapolados = []
     modelos_aprobados = 0
     modelos_rechazados = 0
     
     n_splits = len(split_cols_ordenados)
-    total_modelos_teoricos = (n_splits - 2) * (n_splits - 1) // 2
     
-    logger.info(f"\n🏋️ ENTRENANDO MODELOS (teóricos: {total_modelos_teoricos})...")
-    
-    modelo_idx = 0
-    for idx_objetivo in range(0, n_splits - 1):
-        split_objetivo = split_cols_ordenados[idx_objetivo]
+    if args.tipo_modelo == 'interpolacion':
+        # Entrenar todos los modelos de interpolación
+        total_modelos_teoricos = (n_splits - 2) * (n_splits - 1) // 2
+        logger.info(f"\n🏋️ ENTRENANDO MODELOS DE INTERPOLACIÓN (teóricos: {total_modelos_teoricos})...")
         
-        for idx_posicion in range(idx_objetivo + 1, n_splits):
-            posicion_atleta = split_cols_ordenados[idx_posicion]
-            modelo_idx += 1
+        modelo_idx = 0
+        for idx_objetivo in range(0, n_splits - 1):
+            split_objetivo = split_cols_ordenados[idx_objetivo]
             
-            logger.info(f"\n📌 [{modelo_idx}/{total_modelos_teoricos}] {split_objetivo} ← {posicion_atleta}")
+            for idx_posicion in range(idx_objetivo + 1, n_splits):
+                posicion_atleta = split_cols_ordenados[idx_posicion]
+                modelo_idx += 1
+                
+                logger.info(f"\n📌 [{modelo_idx}/{total_modelos_teoricos}] {split_objetivo} ← {posicion_atleta}")
+                
+                # Verificar si necesita extrapolación
+                necesita_extrapolacion = False
+                split_origen = None
+                dist_origen = None
+                dist_objetivo = None
+                
+                if metadata and 'analisis' in metadata:
+                    mapping = metadata['analisis'].get('mapping', {})
+                    if split_objetivo in mapping:
+                        tipo, origen, dist = mapping[split_objetivo]
+                        if tipo == 'interpolate':
+                            if split_objetivo not in df.columns or df[split_objetivo].isna().all():
+                                necesita_extrapolacion = True
+                                split_origen = origen
+                                dist_origen = dist
+                                dist_objetivo = extract_split_distance(split_objetivo)
+                                logger.info(f"   🔍 Split {split_objetivo} requiere EXTRAPOLACIÓN desde {split_origen}")
+                
+                if necesita_extrapolacion:
+                    modelo, metricas, modelo_id, exito, validacion = entrenar_modelo_extrapolado(
+                        df, split_objetivo, split_origen, dist_origen, dist_objetivo,
+                        posicion_atleta, split_cols_ordenados, model_params, metadata,
+                        carrera=args.carrera
+                    )
+                else:
+                    modelo, metricas, modelo_id, exito, validacion = entrenar_modelo_interpolacion(
+                        df, split_objetivo, posicion_atleta, 
+                        split_cols_ordenados, model_params, metadata,
+                        carrera=args.carrera
+                    )
+                
+                # Procesar resultado
+                if exito and modelo and validacion and validacion['aprobado']:
+                    # Guardar modelo en estructura: tipo/carrera/evento/timestamp
+                    model_subdir = os.path.join(model_dir, args.tipo_modelo, args.carrera, args.evento, timestamp_unico)
+                    os.makedirs(model_subdir, exist_ok=True)
+                    model_path = os.path.join(model_subdir, f"{modelo_id}.joblib")
+                    joblib.dump(modelo, model_path)
+                    
+                    s3_bucket = "timingsense-modelos-2026"
+                    s3_model_uri = f"s3://{s3_bucket}/experiments/{args.tipo_modelo}/{args.carrera}/{args.evento}/{timestamp_unico}/{modelo_id}.joblib"
+                    
+                    metrics_path = guardar_metricas_para_registry(metricas, validacion, output_dir, modelo_id)
+                    
+                    s3_client = boto3.client('s3')
+                    s3_metrics_key = f"experiments/{args.tipo_modelo}/{args.carrera}/{args.evento}/{timestamp_unico}/metrics/{modelo_id}_metrics.json"
+                    try:
+                        s3_client.upload_file(metrics_path, s3_bucket, s3_metrics_key)
+                        logger.info(f"   📊 Métricas subidas a S3: {s3_metrics_key}")
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ Error subiendo métricas a S3: {e}")
+                    
+                    calidad = validacion.get('puntuacion_calidad', 0)
+                    approval_status = "Approved" if calidad >= 70 else "Rejected"
+                    
+                    try:
+                        registry_response = sm_client.create_model_package(
+                            ModelPackageGroupName=nombre_grupo,
+                            ModelPackageDescription=f"Modelo {modelo_id} - MAE: {metricas.get('mae_mean', 0):.2f}s, Calidad: {calidad}/100",
+                            InferenceSpecification={
+                                'Containers': [{
+                                    'Image': '683313688378.dkr.ecr.eu-north-1.amazonaws.com/sagemaker-xgboost:1.7-1',
+                                    'ModelDataUrl': s3_model_uri,
+                                    'Environment': {
+                                        'MODEL_TYPE': args.tipo_modelo,
+                                        'SPLIT_OBJETIVO': split_objetivo,
+                                        'POSICION_ATLETA': posicion_atleta,
+                                        'MODEL_ID': modelo_id,
+                                        'CARRERA': args.carrera,
+                                        'EVENTO': args.evento
+                                    }
+                                }],
+                                'SupportedContentTypes': ['text/csv'],
+                                'SupportedResponseMIMETypes': ['text/csv']
+                            },
+                            ModelApprovalStatus=approval_status,
+                            CustomerMetadataProperties={
+                                'modelo_id': modelo_id,
+                                'tipo_modelo': args.tipo_modelo,
+                                'split_objetivo': split_objetivo,
+                                'posicion_atleta': posicion_atleta,
+                                'carrera': args.carrera,
+                                'evento': args.evento,
+                                'timestamp': timestamp_unico,
+                                'calidad': str(calidad),
+                                'es_extrapolado': str(necesita_extrapolacion)
+                            }
+                        )
+                        registry_arn = registry_response.get('ModelPackageArn')
+                        logger.info(f"   📦 Modelo registrado: {modelo_id} | Estado: {approval_status} | Calidad: {calidad}/100")
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ Error registrando modelo: {e}")
+                        registry_arn = None
+                    
+                    modelos_guardados[modelo_id] = {
+                        'path': model_path,
+                        's3_uri': s3_model_uri,
+                        'split_objetivo': split_objetivo,
+                        'posicion_atleta': posicion_atleta,
+                        'mae': metricas.get('mae_mean', 0),
+                        'es_extrapolado': necesita_extrapolacion,
+                        'validacion': validacion,
+                        'registry_arn': registry_arn
+                    }
+                    
+                    metricas_totales.append({
+                        'modelo_id': modelo_id,
+                        'tipo_modelo': args.tipo_modelo,
+                        'split_objetivo': split_objetivo,
+                        'posicion_atleta': posicion_atleta,
+                        'mae': metricas.get('mae_mean', 0),
+                        'n_samples': metricas.get('n_samples', 0),
+                        'calidad': calidad,
+                        'registry_arn': registry_arn
+                    })
+                    
+                    validaciones_totales.append(validacion)
+                    modelos_aprobados += 1
+                    
+                    logger.info(f"   ✅ GUARDADO - MAE={metricas.get('mae_mean', 0):.1f}s | Calidad={calidad}/100")
+                else:
+                    modelos_rechazados += 1
+                    if validacion:
+                        logger.info(f"   ❌ RECHAZADO - Calidad={validacion['puntuacion_calidad']}/100")
+                    else:
+                        logger.info(f"   ❌ RECHAZADO - Datos insuficientes")
+    
+    else:  # tipo_modelo == 'prediccion'
+        # Para predicción, solo entrenamos modelos que predicen splits específicos
+        # (ej: predecir Meta desde diferentes posiciones)
+        splits_a_predecir = splits_objetivo if splits_objetivo else [split_cols_ordenados[-1]]  # por defecto el último split
+        total_modelos_teoricos = len(splits_a_predecir) * (n_splits - 1)
+        
+        logger.info(f"\n🎯 ENTRENANDO MODELOS DE PREDICCIÓN (teóricos: {total_modelos_teoricos})...")
+        
+        modelo_idx = 0
+        for split_objetivo in splits_a_predecir:
+            if split_objetivo not in split_cols_ordenados:
+                logger.warning(f"⚠️ Split {split_objetivo} no encontrado en los datos")
+                continue
             
-            # Verificar si este split necesita extrapolación
-            necesita_extrapolacion = False
-            split_origen = None
-            dist_origen = None
-            dist_objetivo = None
+            idx_objetivo = split_cols_ordenados.index(split_objetivo)
             
-            if metadata and 'analisis' in metadata:
-                mapping = metadata['analisis'].get('mapping', {})
-                if split_objetivo in mapping:
-                    tipo, origen, dist = mapping[split_objetivo]
-                    if tipo == 'interpolate':
-                        if split_objetivo not in df.columns or df[split_objetivo].isna().all():
-                            necesita_extrapolacion = True
-                            split_origen = origen
-                            dist_origen = dist
-                            dist_objetivo = extract_split_distance(split_objetivo)
-                            logger.info(f"   🔍 Split {split_objetivo} requiere EXTRAPOLACIÓN desde {split_origen}")
-            
-            # Llamar al entrenamiento
-            if necesita_extrapolacion:
-                modelo, metricas, modelo_id, exito, validacion = entrenar_modelo_extrapolado(
-                    df, split_objetivo, split_origen, dist_origen, dist_objetivo,
-                    posicion_atleta, split_cols_ordenados, model_params, metadata,
-                    carrera=args.carrera
-                )
-            else:
+            for idx_posicion in range(0, idx_objetivo):
+                posicion_atleta = split_cols_ordenados[idx_posicion]
+                modelo_idx += 1
+                
+                logger.info(f"\n📌 [{modelo_idx}/{total_modelos_teoricos}] {split_objetivo} ← {posicion_atleta}")
+                
                 modelo, metricas, modelo_id, exito, validacion = entrenar_modelo_interpolacion(
                     df, split_objetivo, posicion_atleta, 
                     split_cols_ordenados, model_params, metadata,
                     carrera=args.carrera
                 )
-            
-            # Procesar resultado con validación
-            if exito and modelo and validacion and validacion['aprobado']:
-                # Guardar modelo SOLO si está aprobado
-                model_path = os.path.join(model_dir, f"{modelo_id}.joblib")
-                joblib.dump(modelo, model_path)
                 
-                # Construir URI S3 del modelo (para el registro)
-                s3_bucket = "timingsense-modelos-2026"
-                s3_model_uri = f"s3://{s3_bucket}/entrenamientos/{args.carrera.replace(' ', '_')}/{timestamp_unico}/models/{modelo_id}.joblib"
-                
-                # Guardar métricas en JSON para el registry
-                metrics_path = guardar_metricas_para_registry(metricas, validacion, output_dir, modelo_id)
-                
-                # Subir métricas a S3
-                s3_client = boto3.client('s3')
-                s3_metrics_key = f"entrenamientos/{args.carrera.replace(' ', '_')}/{timestamp_unico}/metrics/{modelo_id}_metrics.json"
-                try:
-                    s3_client.upload_file(metrics_path, s3_bucket, s3_metrics_key)
-                    logger.info(f"   📊 Métricas subidas a S3: {s3_metrics_key}")
-                except Exception as e:
-                    logger.warning(f"   ⚠️ Error subiendo métricas a S3: {e}")
-                
-                # Registrar en SageMaker Model Registry
-                registry_response = registrar_modelo_en_registry(
-                    modelo_id=modelo_id,
-                    metricas=metricas,
-                    model_s3_uri=s3_model_uri,
-                    carrera=args.carrera,
-                    timestamp_unico=timestamp_unico,
-                    validacion=validacion
-                )
-                
-                # Guardar en modelos_guardados
-                modelos_guardados[modelo_id] = {
-                    'path': model_path,
-                    's3_uri': s3_model_uri,
-                    'split_objetivo': split_objetivo,
-                    'posicion_atleta': posicion_atleta,
-                    'splits_disponibles': metricas.get('splits_disponibles', []),
-                    'n_samples': metricas.get('n_samples', 0),
-                    'mae': metricas.get('mae_mean', 0),
-                    'es_extrapolado': necesita_extrapolacion,
-                    'validacion': validacion,
-                    'registry_arn': registry_response.get('ModelPackageArn') if registry_response else None
-                }
-                
-                metricas_totales.append({
-                    'modelo_id': modelo_id,
-                    'split_objetivo': split_objetivo,
-                    'posicion_atleta': posicion_atleta,
-                    'mae': metricas.get('mae_mean', 0),
-                    'mae_std': metricas.get('mae_std', 0),
-                    'n_samples': metricas.get('n_samples', 0),
-                    'es_extrapolado': necesita_extrapolacion,
-                    'calidad': validacion['puntuacion_calidad'],
-                    'registry_arn': registry_response.get('ModelPackageArn') if registry_response else None
-                })
-                
-                validaciones_totales.append(validacion)
-                modelos_aprobados += 1
-                
-                logger.info(f"   ✅ GUARDADO - MAE={metricas.get('mae_mean', 0):.1f}s | Calidad={validacion['puntuacion_calidad']}/100")
-                if registry_response:
-                    logger.info(f"      Registry ARN: {registry_response.get('ModelPackageArn', 'N/A')}")
-            else:
-                modelos_rechazados += 1
-                if validacion:
+                if exito and modelo and validacion and validacion['aprobado']:
+                    model_subdir = os.path.join(model_dir, args.tipo_modelo, args.carrera, args.evento, timestamp_unico)
+                    os.makedirs(model_subdir, exist_ok=True)
+                    model_path = os.path.join(model_subdir, f"{modelo_id}.joblib")
+                    joblib.dump(modelo, model_path)
+                    
+                    s3_bucket = "timingsense-modelos-2026"
+                    s3_model_uri = f"s3://{s3_bucket}/experiments/{args.tipo_modelo}/{args.carrera}/{args.evento}/{timestamp_unico}/{modelo_id}.joblib"
+                    
+                    metrics_path = guardar_metricas_para_registry(metricas, validacion, output_dir, modelo_id)
+                    
+                    s3_client = boto3.client('s3')
+                    s3_metrics_key = f"experiments/{args.tipo_modelo}/{args.carrera}/{args.evento}/{timestamp_unico}/metrics/{modelo_id}_metrics.json"
+                    try:
+                        s3_client.upload_file(metrics_path, s3_bucket, s3_metrics_key)
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ Error subiendo métricas: {e}")
+                    
+                    calidad = validacion.get('puntuacion_calidad', 0)
+                    approval_status = "Approved" if calidad >= 70 else "Rejected"
+                    
+                    try:
+                        registry_response = sm_client.create_model_package(
+                            ModelPackageGroupName=nombre_grupo,
+                            ModelPackageDescription=f"Modelo {modelo_id} - MAE: {metricas.get('mae_mean', 0):.2f}s, Calidad: {calidad}/100",
+                            InferenceSpecification={
+                                'Containers': [{
+                                    'Image': '683313688378.dkr.ecr.eu-north-1.amazonaws.com/sagemaker-xgboost:1.7-1',
+                                    'ModelDataUrl': s3_model_uri,
+                                    'Environment': {
+                                        'MODEL_TYPE': args.tipo_modelo,
+                                        'SPLIT_OBJETIVO': split_objetivo,
+                                        'POSICION_ATLETA': posicion_atleta,
+                                        'MODEL_ID': modelo_id,
+                                        'CARRERA': args.carrera,
+                                        'EVENTO': args.evento
+                                    }
+                                }],
+                                'SupportedContentTypes': ['text/csv'],
+                                'SupportedResponseMIMETypes': ['text/csv']
+                            },
+                            ModelApprovalStatus=approval_status,
+                            CustomerMetadataProperties={
+                                'modelo_id': modelo_id,
+                                'tipo_modelo': args.tipo_modelo,
+                                'split_objetivo': split_objetivo,
+                                'posicion_atleta': posicion_atleta,
+                                'carrera': args.carrera,
+                                'evento': args.evento,
+                                'timestamp': timestamp_unico,
+                                'calidad': str(calidad)
+                            }
+                        )
+                        registry_arn = registry_response.get('ModelPackageArn')
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ Error registrando modelo: {e}")
+                        registry_arn = None
+                    
+                    modelos_guardados[modelo_id] = {
+                        'path': model_path,
+                        's3_uri': s3_model_uri,
+                        'split_objetivo': split_objetivo,
+                        'posicion_atleta': posicion_atleta,
+                        'mae': metricas.get('mae_mean', 0),
+                        'validacion': validacion,
+                        'registry_arn': registry_arn
+                    }
+                    
+                    metricas_totales.append({
+                        'modelo_id': modelo_id,
+                        'tipo_modelo': args.tipo_modelo,
+                        'split_objetivo': split_objetivo,
+                        'posicion_atleta': posicion_atleta,
+                        'mae': metricas.get('mae_mean', 0),
+                        'n_samples': metricas.get('n_samples', 0),
+                        'calidad': calidad
+                    })
+                    
                     validaciones_totales.append(validacion)
-                    logger.info(f"   ❌ RECHAZADO - Calidad={validacion['puntuacion_calidad']}/100")
+                    modelos_aprobados += 1
+                    
+                    logger.info(f"   ✅ GUARDADO - MAE={metricas.get('mae_mean', 0):.1f}s | Calidad={calidad}/100")
                 else:
-                    logger.info(f"   ❌ RECHAZADO - Datos insuficientes")
+                    modelos_rechazados += 1
+                    logger.info(f"   ❌ RECHAZADO - Datos insuficientes o validación fallida")
     
     # =============================================================
-    # GUARDAR METADATA CON VALIDACIONES
+    # GUARDAR METADATA
     # =============================================================
     logger.info("\n💾 GUARDANDO METADATA...")
     
@@ -1149,25 +1299,23 @@ def main():
             'puntuacion_max': float(np.max(puntuaciones)),
             'mejora_promedio_sobre_naive': float(np.mean(mejoras)),
             'cv_promedio': float(np.mean(cvs)),
-            'ratio_outliers_promedio': float(np.mean(ratios)),
-            'rechazos_por_mejor_que_naive': sum(1 for v in validaciones_totales if not v['niveles']['mejor_que_naive']['aprueba']),
-            'rechazos_por_consistencia': sum(1 for v in validaciones_totales if not v['niveles']['consistencia_error']['aprueba']),
-            'rechazos_por_outliers': sum(1 for v in validaciones_totales if not v['niveles']['sin_outliers']['aprueba'])
+            'ratio_outliers_promedio': float(np.mean(ratios))
         }
     
     metadata_completa = {
+        'tipo_modelo': args.tipo_modelo,
         'carrera': args.carrera,
+        'evento': args.evento,
+        'splits_objetivo': splits_objetivo,
         'timestamp': timestamp_unico,
         'fecha_entrenamiento': datetime.now().isoformat(),
-        'total_modelos_teoricos': total_modelos_teoricos,
         'modelos_guardados': len(modelos_guardados),
-        'modelos_extrapolados': len(splits_extrapolados),
-        'splits_extrapolados': splits_extrapolados,
+        'modelos_aprobados': modelos_aprobados,
+        'modelos_rechazados': modelos_rechazados,
         'splits': split_cols_ordenados,
         'hiperparametros': model_params,
         'metricas_resumen': {
             'mae_promedio': float(df_metricas['mae'].mean()) if not df_metricas.empty else 0,
-            'mae_std_promedio': float(df_metricas['mae_std'].mean()) if not df_metricas.empty else 0,
             'total_muestras': int(df_metricas['n_samples'].sum()) if not df_metricas.empty else 0
         },
         'validaciones': estadisticas_validacion
@@ -1177,130 +1325,75 @@ def main():
         metadata_completa['analisis_original'] = metadata['analisis']
     
     # Guardar metadata principal
-    with open(os.path.join(model_dir, 'metadata.json'), 'w') as f:
+    metadata_path = os.path.join(model_dir, 'metadata.json')
+    with open(metadata_path, 'w') as f:
         json.dump(metadata_completa, f, indent=2, default=str)
     
     # Guardar lista de modelos disponibles
     with open(os.path.join(model_dir, 'modelos_disponibles.json'), 'w') as f:
         json.dump(list(modelos_guardados.keys()), f, indent=2)
     
-    # Guardar resumen de validaciones aparte
-    if validaciones_totales:
-        resumen_validaciones = {
-            'carrera': args.carrera,
-            'timestamp': timestamp_unico,
-            'fecha': datetime.now().isoformat(),
-            'total_evaluados': len(validaciones_totales),
-            'aprobados': modelos_aprobados,
-            'rechazados': modelos_rechazados,
-            'tasa_aprobacion': modelos_aprobados / len(validaciones_totales) if validaciones_totales else 0,
-            'mejores_modelos': sorted(
-                [{'id': k, 'mae': v['mae'], 'calidad': v['validacion']['puntuacion_calidad']} 
-                 for k, v in modelos_guardados.items()],
-                key=lambda x: x['calidad'],
-                reverse=True
-            )[:5]
-        }
-        with open(os.path.join(output_dir, 'resumen_validaciones.json'), 'w') as f:
-            json.dump(resumen_validaciones, f, indent=2, default=str)
-    
     logger.info(f"✅ {len(modelos_guardados)} modelos guardados en {model_dir}")
     
     # =============================================================
-    # RESUMEN FINAL CON ESTADÍSTICAS DE VALIDACIÓN
+    # RESUMEN FINAL
     # =============================================================
     logger.info("\n" + "="*80)
     logger.info("📊 RESUMEN DEL ENTRENAMIENTO")
     logger.info("="*80)
+    logger.info(f"🎯 Tipo: {args.tipo_modelo}")
     logger.info(f"🎯 Carrera: {args.carrera}")
+    logger.info(f"🎯 Evento: {args.evento}")
     logger.info(f"🕒 Timestamp: {timestamp_unico}")
-    logger.info(f"📊 Modelos entrenados: {modelos_aprobados}/{total_modelos_teoricos}")
-    logger.info(f"🔄 Modelos extrapolados: {len(splits_extrapolados)}")
-    
-    if splits_extrapolados:
-        logger.info(f"   Splits extrapolados: {splits_extrapolados}")
-    
-    # Mostrar estadísticas de validación
-    if estadisticas_validacion:
-        logger.info(f"\n📈 ESTADÍSTICAS DE VALIDACIÓN:")
-        logger.info(f"   Tasa de aprobación: {estadisticas_validacion['tasa_aprobacion']:.1%}")
-        logger.info(f"   Calidad promedio: {estadisticas_validacion['puntuacion_promedio']:.0f}/100")
-        logger.info(f"   Mejora promedio sobre naïve: {estadisticas_validacion['mejora_promedio_sobre_naive']:.1%}")
-        logger.info(f"   CV promedio: {estadisticas_validacion['cv_promedio']:.2f}")
-        logger.info(f"   Rechazos por:")
-        logger.info(f"      - No mejora a naïve: {estadisticas_validacion['rechazos_por_mejor_que_naive']}")
-        logger.info(f"      - Error inconsistente: {estadisticas_validacion['rechazos_por_consistencia']}")
-        logger.info(f"      - Outliers catastróficos: {estadisticas_validacion['rechazos_por_outliers']}")
+    logger.info(f"📊 Modelos aprobados: {modelos_aprobados}")
+    logger.info(f"📊 Modelos rechazados: {modelos_rechazados}")
     
     if metricas_totales:
         df_metricas_ordenado = df_metricas.sort_values('mae')
         logger.info("\n🏆 TOP 5 MEJORES MODELOS (por MAE):")
         for _, row in df_metricas_ordenado.head(5).iterrows():
-            tipo = "EXT" if row.get('es_extrapolado', False) else "DIR"
-            calidad = row.get('calidad', 0)
-            logger.info(f"   {row['modelo_id']}: MAE={row['mae']:.2f}s ({tipo}, n={row['n_samples']}, calidad={calidad}/100)")
-        
-        logger.info("\n🏆 TOP 5 MEJORES MODELOS (por calidad):")
-        df_por_calidad = df_metricas.sort_values('calidad', ascending=False)
-        for _, row in df_por_calidad.head(5).iterrows():
-            tipo = "EXT" if row.get('es_extrapolado', False) else "DIR"
-            logger.info(f"   {row['modelo_id']}: Calidad={row['calidad']}/100 (MAE={row['mae']:.2f}s, n={row['n_samples']})")
+            logger.info(f"   {row['modelo_id']}: MAE={row['mae']:.2f}s, calidad={row.get('calidad', 0)}/100")
     
     logger.info("\n" + "="*80)
     logger.info("✅ ENTRENAMIENTO COMPLETADO")
     logger.info("="*80)
-
+    
     # =============================================================
-    # 🆕 PUBLICAR MÉTRICAS A CLOUDWATCH PARA ALARMAS
+    # PUBLICAR MÉTRICAS A CLOUDWATCH
     # =============================================================
     try:
-        import boto3
-        from datetime import datetime
-        
         cloudwatch = boto3.client('cloudwatch')
         
-        # Calcular modelos aprobados (calidad >= 90)
-        modelos_aprobados_cloudwatch = sum(1 for m in metricas_totales if m.get('calidad', 0) >= 90)
-        modelos_totales = len(metricas_totales)
-        
-        # Calcular tasa de aprobación
-        tasa_aprobacion = (modelos_aprobados_cloudwatch / modelos_totales * 100) if modelos_totales > 0 else 0
-        
-        # Publicar MÚLTIPLES métricas
         cloudwatch.put_metric_data(
             Namespace='timingsense/SageMaker',
             MetricData=[
                 {
                     'MetricName': 'ModelosAprobados',
-                    'Value': modelos_aprobados_cloudwatch,
+                    'Value': modelos_aprobados,
                     'Unit': 'Count',
                     'Timestamp': datetime.now(),
-                    'Dimensions': [{'Name': 'Carrera', 'Value': args.carrera}]
+                    'Dimensions': [
+                        {'Name': 'TipoModelo', 'Value': args.tipo_modelo},
+                        {'Name': 'Carrera', 'Value': args.carrera},
+                        {'Name': 'Evento', 'Value': args.evento}
+                    ]
                 },
                 {
                     'MetricName': 'ModelosTotales',
-                    'Value': modelos_totales,
+                    'Value': modelos_aprobados + modelos_rechazados,
                     'Unit': 'Count',
                     'Timestamp': datetime.now(),
-                    'Dimensions': [{'Name': 'Carrera', 'Value': args.carrera}]
-                },
-                {
-                    'MetricName': 'TasaAprobacion',
-                    'Value': tasa_aprobacion,
-                    'Unit': 'Percent',
-                    'Timestamp': datetime.now(),
-                    'Dimensions': [{'Name': 'Carrera', 'Value': args.carrera}]
+                    'Dimensions': [
+                        {'Name': 'TipoModelo', 'Value': args.tipo_modelo},
+                        {'Name': 'Carrera', 'Value': args.carrera},
+                        {'Name': 'Evento', 'Value': args.evento}
+                    ]
                 }
             ]
         )
-        
-        logger.info(f"📊 Métricas publicadas a CloudWatch:")
-        logger.info(f"   - ModelosAprobados: {modelos_aprobados_cloudwatch}")
-        logger.info(f"   - ModelosTotales: {modelos_totales}")
-        logger.info(f"   - TasaAprobacion: {tasa_aprobacion:.1f}%")
-        
+        logger.info(f"📊 Métricas publicadas a CloudWatch")
     except Exception as e:
-        logger.warning(f"⚠️ Error publicando métricas a CloudWatch: {e}")
+        logger.warning(f"⚠️ Error publicando métricas: {e}")
     
     return 0
 
