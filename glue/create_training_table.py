@@ -482,8 +482,6 @@ def analyze_split_requirements(splits_originales, carreras_historicas):
     """
     Analiza qué splits son directos y cuáles necesitan interpolación.
     """
-    print(f"🔍 DEBUG analyze_split_requirements: splits_originales = {splits_originales}")
-    
     splits_directos = []
     splits_interpolables = []
     splits_imposibles = []
@@ -491,32 +489,28 @@ def analyze_split_requirements(splits_originales, carreras_historicas):
     
     # Normalizar splits originales (extraer nombre si es diccionario)
     splits_normalizados = []
-    for i, s in enumerate(splits_originales):
-        print(f"🔍 DEBUG: Normalizando split {i}: {s}, tipo={type(s)}")
+    for s in splits_originales:
         if isinstance(s, dict):
             nombre = s.get('nombre', '')
-            print(f"🔍 DEBUG: Split es dict, nombre = {nombre}")
             splits_normalizados.append(nombre.replace('.', '_').replace('-', '_'))
         else:
             splits_normalizados.append(str(s).replace('.', '_').replace('-', '_'))
     
-    print(f"🔍 DEBUG: splits_normalizados = {splits_normalizados}")
-    
-    # Obtener todos los splits disponibles en carreras históricas
+    # ✅ CORREGIDO: Normalizar splits de carreras históricas
     splits_disponibles = set()
     for c in carreras_historicas:
         splits_carrera = c.get('splits', [])
-        print(f"🔍 DEBUG: Carrera {c.get('race_id', 'unknown')} tiene splits: {splits_carrera}")
-        splits_disponibles.update(splits_carrera)
-    
-    print(f"🔍 DEBUG: splits_disponibles = {splits_disponibles}")
+        for s in splits_carrera:
+            if isinstance(s, dict):
+                nombre = s.get('nombre', str(s))
+                splits_disponibles.add(nombre.replace('.', '_').replace('-', '_'))
+            else:
+                splits_disponibles.add(str(s).replace('.', '_').replace('-', '_'))
     
     for split_original, split_norm in zip(splits_originales, splits_normalizados):
-        print(f"🔍 DEBUG: Comparando split_original={split_original}, split_norm={split_norm}")
         if split_norm in splits_disponibles:
             splits_directos.append(split_original)
             mapping[split_original] = {'tipo': 'directo', 'split_origen': split_norm}
-            print(f"🔍 DEBUG: {split_norm} es DIRECTO")
         else:
             splits_interpolables.append({
                 'split_objetivo': split_original,
@@ -524,7 +518,6 @@ def analyze_split_requirements(splits_originales, carreras_historicas):
                 'split_posterior': None
             })
             mapping[split_original] = {'tipo': 'interpolable', 'disponible': False}
-            print(f"🔍 DEBUG: {split_norm} es INTERPOLABLE")
     
     return {
         'splits_directos': splits_directos,
@@ -572,6 +565,9 @@ def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint
         print(f"🔍 DEBUG: Error en get_dataset_hash: {e}")
         raise
     
+    # ✅ IMPORTANTE: Esta línea debe estar DENTRO del bloque try/except o después
+    dataset_existente = dataset_ya_existe(hash_dataset, output_base)
+    
     if dataset_existente:
         print(f"   💾 Dataset ya existe (hash: {hash_dataset[:8]}), reutilizando")
         
@@ -601,6 +597,9 @@ def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint
         
         return resultado
     
+    # ✅ El resto del código (cuando NO existe dataset) debe estar a este nivel
+    print(f"🔍 DEBUG: Dataset no existe, continuando con creación...")
+    
     # ============================================================
     # TRANSFORMAR CARRERAS HISTÓRICAS AL FORMATO ESPERADO
     # ============================================================
@@ -614,7 +613,12 @@ def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint
             response = s3.get_object(Bucket=parsed.netloc, Key=parsed.path.lstrip('/'))
             metadata_carrera = json.loads(response['Body'].read().decode('utf-8'))
             
-            splits_carrera = [s['nombre'] for s in metadata_carrera.get('splits', [])]
+            splits_carrera = []
+            for s in metadata_carrera.get('splits', []):
+                if isinstance(s, dict):
+                    splits_carrera.append(s.get('nombre', str(s)))
+                else:
+                    splits_carrera.append(str(s))
             
             carreras_historicas.append({
                 'race_id': race_id,
@@ -623,10 +627,19 @@ def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint
             })
         except Exception as e:
             print(f"   ⚠️ Error cargando splits de {h['race_id']}: {e}")
+            
+            # ✅ CORREGIDO: Normalizar los splits del fallback (extraer nombre si es dict)
+            splits_fallback = []
+            for s in h.get('splits', []):
+                if isinstance(s, dict):
+                    splits_fallback.append(s.get('nombre', str(s)))
+                else:
+                    splits_fallback.append(str(s))
+            
             carreras_historicas.append({
                 'race_id': h['race_id'],
                 'event_id': h.get('evento', 'unknown'),
-                'splits': h.get('splits', [])
+                'splits': splits_fallback
             })
     
     print(f"   Carreras históricas a usar: {len(carreras_historicas)}")
