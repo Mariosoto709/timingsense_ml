@@ -25,7 +25,7 @@ s3 = boto3.client('s3')
 athena = boto3.client('athena')
 
 # Constantes
-S3_ATHENA_OUTPUT = 's3://timingsense-training-data'
+S3_ATHENA_OUTPUT = 's3://timingsense-athena-output-2026'  
 DATABASE = 'timingsense_training'
 MAX_RETRIES = 3
 RETRY_BACKOFF = [1, 2, 4]  # segundos
