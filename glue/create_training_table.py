@@ -453,21 +453,25 @@ def analyze_split_requirements(splits_originales, carreras_historicas):
     splits_imposibles = []
     mapping = {}
     
+    # Normalizar splits originales (extraer nombre si es diccionario)
+    splits_normalizados = []
+    for s in splits_originales:
+        if isinstance(s, dict):
+            nombre = s.get('nombre', '')
+            splits_normalizados.append(nombre.replace('.', '_').replace('-', '_'))
+        else:
+            splits_normalizados.append(s.replace('.', '_').replace('-', '_'))
+    
     # Obtener todos los splits disponibles en carreras históricas
     splits_disponibles = set()
     for c in carreras_historicas:
         splits_disponibles.update(c.get('splits', []))
-    
-    # Normalizar splits originales
-    splits_normalizados = [s.replace('.', '_') for s in splits_originales]
     
     for split_original, split_norm in zip(splits_originales, splits_normalizados):
         if split_norm in splits_disponibles:
             splits_directos.append(split_original)
             mapping[split_original] = {'tipo': 'directo', 'split_origen': split_norm}
         else:
-            # Intentar encontrar split cercano para interpolación
-            # (lógica simplificada, se puede expandir)
             splits_interpolables.append({
                 'split_objetivo': split_original,
                 'split_anterior': None,
