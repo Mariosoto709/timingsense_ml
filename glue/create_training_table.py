@@ -403,12 +403,46 @@ class TrainingCheckpoint:
 
 def get_dataset_hash(carreras_historicas, splits_objetivo, evento_objetivo):
     """Calcula hash único para un conjunto de carreras y splits"""
+    print(f"🔍 DEBUG get_dataset_hash: splits_objetivo = {splits_objetivo}")
+    
+    # Normalizar splits_objetivo (extraer nombre si es diccionario)
+    splits_normalizados = []
+    for i, s in enumerate(splits_objetivo):
+        print(f"🔍 DEBUG: Procesando split {i}: {s}, tipo={type(s)}")
+        if isinstance(s, dict):
+            nombre = s.get('nombre', '')
+            print(f"🔍 DEBUG: Split es dict, nombre extraído = {nombre}")
+            splits_normalizados.append(nombre.replace('.', '_').replace('-', '_'))
+        else:
+            splits_normalizados.append(str(s).replace('.', '_').replace('-', '_'))
+    
+    print(f"🔍 DEBUG: splits_normalizados = {splits_normalizados}")
+    
+    # Crear lista de carreras
+    carreras_list = [c['race_id'] for c in carreras_historicas]
+    eventos_list = [c.get('evento', 'unknown') for c in carreras_historicas]
+    
+    print(f"🔍 DEBUG: carreras_list = {carreras_list}")
+    print(f"🔍 DEBUG: eventos_list = {eventos_list}")
+    
+    # Ordenar (aquí puede ocurrir el error si hay diccionarios)
+    try:
+        carreras_sorted = sorted(carreras_list)
+        eventos_sorted = sorted(eventos_list)
+        splits_sorted = sorted(splits_normalizados)
+    except Exception as e:
+        print(f"🔍 DEBUG: Error en sorted: {e}")
+        raise
+    
     data = {
-        "carreras": sorted([c['race_id'] for c in carreras_historicas]),
-        "eventos_historicos": sorted([c.get('evento', 'unknown') for c in carreras_historicas]),
+        "carreras": carreras_sorted,
+        "eventos_historicos": eventos_sorted,
         "evento_objetivo": evento_objetivo,
-        "splits": sorted(splits_objetivo)
+        "splits": splits_sorted
     }
+    
+    print(f"🔍 DEBUG: data para hash = {data}")
+    
     return hashlib.md5(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
@@ -448,6 +482,8 @@ def analyze_split_requirements(splits_originales, carreras_historicas):
     """
     Analiza qué splits son directos y cuáles necesitan interpolación.
     """
+    print(f"🔍 DEBUG analyze_split_requirements: splits_originales = {splits_originales}")
+    
     splits_directos = []
     splits_interpolables = []
     splits_imposibles = []
@@ -455,22 +491,32 @@ def analyze_split_requirements(splits_originales, carreras_historicas):
     
     # Normalizar splits originales (extraer nombre si es diccionario)
     splits_normalizados = []
-    for s in splits_originales:
+    for i, s in enumerate(splits_originales):
+        print(f"🔍 DEBUG: Normalizando split {i}: {s}, tipo={type(s)}")
         if isinstance(s, dict):
             nombre = s.get('nombre', '')
+            print(f"🔍 DEBUG: Split es dict, nombre = {nombre}")
             splits_normalizados.append(nombre.replace('.', '_').replace('-', '_'))
         else:
-            splits_normalizados.append(s.replace('.', '_').replace('-', '_'))
+            splits_normalizados.append(str(s).replace('.', '_').replace('-', '_'))
+    
+    print(f"🔍 DEBUG: splits_normalizados = {splits_normalizados}")
     
     # Obtener todos los splits disponibles en carreras históricas
     splits_disponibles = set()
     for c in carreras_historicas:
-        splits_disponibles.update(c.get('splits', []))
+        splits_carrera = c.get('splits', [])
+        print(f"🔍 DEBUG: Carrera {c.get('race_id', 'unknown')} tiene splits: {splits_carrera}")
+        splits_disponibles.update(splits_carrera)
+    
+    print(f"🔍 DEBUG: splits_disponibles = {splits_disponibles}")
     
     for split_original, split_norm in zip(splits_originales, splits_normalizados):
+        print(f"🔍 DEBUG: Comparando split_original={split_original}, split_norm={split_norm}")
         if split_norm in splits_disponibles:
             splits_directos.append(split_original)
             mapping[split_original] = {'tipo': 'directo', 'split_origen': split_norm}
+            print(f"🔍 DEBUG: {split_norm} es DIRECTO")
         else:
             splits_interpolables.append({
                 'split_objetivo': split_original,
@@ -478,6 +524,7 @@ def analyze_split_requirements(splits_originales, carreras_historicas):
                 'split_posterior': None
             })
             mapping[split_original] = {'tipo': 'interpolable', 'disponible': False}
+            print(f"🔍 DEBUG: {split_norm} es INTERPOLABLE")
     
     return {
         'splits_directos': splits_directos,
@@ -491,21 +538,23 @@ def analyze_split_requirements(splits_originales, carreras_historicas):
 def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint=None):
     """
     Procesa una carrera individual.
-    Ahora con:
-    - Cache por hash
-    - Checkpoint
-    - Escritura segura
     """
     carrera_objetivo = config["carrera_objetivo"]
-    evento_objetivo = config.get("evento_objetivo")  # ← AÑADIR
+    evento_objetivo = config.get("evento_objetivo")
     splits = config["splits"]
     carreras_historicas_detalle = config.get('carreras_historicas_detalle', [])
-    tipo_seleccion = config.get('tipo_seleccion', 'desconocido')
-    cobertura_total = config.get('cobertura_total', 0)
     
     print(f"\n{'='*60}")
-    print(f"🏁 Procesando: {carrera_objetivo} / {evento_objetivo}")  # ← MODIFICAR
+    print(f"🏁 Procesando: {carrera_objetivo} / {evento_objetivo}")
     print(f"{'='*60}")
+    
+    # 🔍 LOG 1: Verificar el tipo de splits
+    print(f"🔍 DEBUG: splits es de tipo {type(splits)}")
+    print(f"🔍 DEBUG: splits = {splits}")
+    if splits and len(splits) > 0:
+        print(f"🔍 DEBUG: primer split es de tipo {type(splits[0])}")
+        if isinstance(splits[0], dict):
+            print(f"🔍 DEBUG: primer split tiene keys: {splits[0].keys()}")
     
     # Verificar checkpoint
     if checkpoint and carrera_objetivo in checkpoint.data.get("carreras_procesadas", []):
@@ -515,8 +564,13 @@ def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint
     # ============================================================
     # CACHE POR HASH
     # ============================================================
-    hash_dataset = get_dataset_hash(carreras_historicas_detalle, splits, evento_objetivo)
-    dataset_existente = dataset_ya_existe(hash_dataset, output_base)
+    print(f"🔍 DEBUG: Calculando hash_dataset...")
+    try:
+        hash_dataset = get_dataset_hash(carreras_historicas_detalle, splits, evento_objetivo)
+        print(f"🔍 DEBUG: hash_dataset calculado: {hash_dataset[:8]}...")
+    except Exception as e:
+        print(f"🔍 DEBUG: Error en get_dataset_hash: {e}")
+        raise
     
     if dataset_existente:
         print(f"   💾 Dataset ya existe (hash: {hash_dataset[:8]}), reutilizando")
