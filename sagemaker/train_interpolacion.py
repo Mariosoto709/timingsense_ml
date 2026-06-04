@@ -65,7 +65,7 @@ def load_training_metadata(model_dir):
     logger.info("🔍 INICIANDO BÚSQUEDA DE METADATA...")
     
     # Listar todo el contenido del directorio training
-    training_dir = '/opt/ml/input/data/training'
+    training_dir = '/opt/ml/input/data/train'  # ← CAMBIADO
     if os.path.exists(training_dir):
         logger.info(f"📂 Contenido de {training_dir}:")
         try:
@@ -187,7 +187,7 @@ def get_paths():
     """Obtiene las rutas estándar de SageMaker dentro del contenedor"""
     model_dir = os.environ.get('SM_MODEL_DIR', '/opt/ml/model')
     output_dir = os.environ.get('SM_OUTPUT_DATA_DIR', '/opt/ml/output')
-    train_dir = os.environ.get('SM_CHANNEL_TRAINING', '/opt/ml/input/data/training')
+    train_dir = os.environ.get('SM_CHANNEL_TRAIN', '/opt/ml/input/data/train')  # ← CAMBIADO
     
     # 🟢🟢🟢 NUEVO LOGGING 🟢🟢🟢
     logger.info(f"📂 Model directory: {model_dir}")
