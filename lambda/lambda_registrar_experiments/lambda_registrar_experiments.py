@@ -1,394 +1,156 @@
 import boto3
 import json
 from datetime import datetime
+from urllib.parse import urlparse
 
 s3_client = boto3.client('s3')
 sm_client = boto3.client('sagemaker')
-sns_client = boto3.client('sns')
 cloudwatch = boto3.client('cloudwatch')
-BUCKET = "timingsense-athena-output-2026"
 
-# ============================================================
-# FUNCIÓN DE VALIDACIÓN POR TIPO DE MODELO
-# ============================================================
-
-def validar_modelo(metadata, carrera, evento, tipo_modelo):
-    """
-    Valida si el modelo es lo suficientemente bueno para registry.
-    Umbrales diferentes para interpolación y predicción.
-    """
-    validaciones = metadata.get('validaciones', {})
-    
-    # Extraer métricas reales
-    calidad_promedio = validaciones.get('puntuacion_promedio', 0)
-    cv_promedio = validaciones.get('cv_promedio', 1.0)
-    tasa_aprobacion = validaciones.get('tasa_aprobacion', 0)
-    n_modelos = metadata.get('modelos_guardados', 0)
-    mejora_promedio = validaciones.get('mejora_promedio_sobre_naive', 0)
-    
-    # Umbrales según tipo de modelo
-    if tipo_modelo == 'interpolacion':
-        umbrales = {
-            'calidad_minima': 70.0,      # Calidad ≥ 70
-            'cv_maximo': 0.5,            # CV ≤ 0.5
-            'tasa_aprobacion_min': 0.6,  # 60% de modelos aprobados
-            'n_modelos_min': 2,          # Mínimo 2 modelos útiles
-            'mejora_minima': 0.1         # Mejora mínima del 10% sobre naïve
-        }
-    else:  # prediccion
-        umbrales = {
-            'calidad_minima': 80.0,      # Calidad ≥ 80 (más exigente)
-            'cv_maximo': 0.4,            # CV ≤ 0.4 (más estricto)
-            'tasa_aprobacion_min': 0.7,  # 70% de modelos aprobados
-            'n_modelos_min': 1,          # Al menos 1 modelo útil
-            'mejora_minima': 0.15        # Mejora mínima del 15% sobre naïve
-        }
-    
-    print(f"🔍 Validando {carrera}/{evento} ({tipo_modelo}):")
-    print(f"   Calidad promedio: {calidad_promedio:.1f} (mín {umbrales['calidad_minima']})")
-    print(f"   CV promedio: {cv_promedio:.3f} (máx {umbrales['cv_maximo']})")
-    print(f"   Tasa aprobación: {tasa_aprobacion:.1%} (mín {umbrales['tasa_aprobacion_min']:.0%})")
-    print(f"   Modelos guardados: {n_modelos} (mín {umbrales['n_modelos_min']})")
-    print(f"   Mejora promedio: {mejora_promedio:.1%} (mín {umbrales['mejora_minima']:.0%})")
-    
-    # Verificar cada condición
-    calidad_ok = calidad_promedio >= umbrales['calidad_minima']
-    cv_ok = cv_promedio <= umbrales['cv_maximo']
-    tasa_ok = tasa_aprobacion >= umbrales['tasa_aprobacion_min']
-    modelos_ok = n_modelos >= umbrales['n_modelos_min']
-    mejora_ok = mejora_promedio >= umbrales['mejora_minima']
-    
-    aprobado = calidad_ok and cv_ok and tasa_ok and modelos_ok and mejora_ok
-    
-    print(f"\n   Resultados:")
-    print(f"   - Calidad: {'✅' if calidad_ok else '❌'} ({calidad_promedio:.1f} ≥ {umbrales['calidad_minima']})")
-    print(f"   - CV: {'✅' if cv_ok else '❌'} ({cv_promedio:.3f} ≤ {umbrales['cv_maximo']})")
-    print(f"   - Tasa aprobación: {'✅' if tasa_ok else '❌'} ({tasa_aprobacion:.1%} ≥ {umbrales['tasa_aprobacion_min']:.0%})")
-    print(f"   - Modelos: {'✅' if modelos_ok else '❌'} ({n_modelos} ≥ {umbrales['n_modelos_min']})")
-    print(f"   - Mejora: {'✅' if mejora_ok else '❌'} ({mejora_promedio:.1%} ≥ {umbrales['mejora_minima']:.0%})")
-    
-    if not aprobado:
-        # Enviar alerta SNS
-        sns_client.publish(
-            TopicArn="arn:aws:sns:eu-north-1:515358862381:timingsense-errores",
-            Subject=f"🚨 MODELOS RECHAZADOS - {carrera}/{evento} ({tipo_modelo})",
-            Message=f"""❌ Entrenamiento RECHAZADO
-
-Carrera: {carrera}
-Evento: {evento}
-Tipo: {tipo_modelo}
-
-Métricas obtenidas vs requeridas:
-- Calidad promedio: {calidad_promedio:.1f}/100 (mín {umbrales['calidad_minima']})
-- CV promedio: {cv_promedio:.3f} (máx {umbrales['cv_maximo']})
-- Tasa aprobación: {tasa_aprobacion:.1%} (mín {umbrales['tasa_aprobacion_min']:.0%})
-- Modelos guardados: {n_modelos} (mín {umbrales['n_modelos_min']})
-- Mejora sobre naïve: {mejora_promedio:.1%} (mín {umbrales['mejora_minima']:.0%})
-
-NO registrado en Experiments.
-"""
-        )
-        return False
-    
-    print(f"✅ {carrera}/{evento} APROBADO para Experiments")
-    return True
-
-
-# ============================================================
-# FUNCIÓN PARA PUBLICAR MÉTRICAS A CLOUDWATCH
-# ============================================================
-
-def publicar_metricas_cloudwatch(carrera, evento, tipo_modelo, metadata, aprobado):
-    """Publica métricas a CloudWatch"""
+def publicar_metrica(nombre, valor, unidad, dimensiones=None):
+    metric_data = [{
+        'MetricName': nombre,
+        'Value': valor,
+        'Unit': unidad,
+        'Timestamp': datetime.utcnow()
+    }]
+    if dimensiones:
+        metric_data[0]['Dimensions'] = dimensiones
     try:
-        validaciones = metadata.get('validaciones', {})
-        
-        metricas = [
-            {
-                'MetricName': 'ModelosGenerados',
-                'Value': 1 if metadata.get('modelos_guardados', 0) > 0 else 0,
-                'Unit': 'Count',
-                'Timestamp': datetime.now(),
-                'Dimensions': [
-                    {'Name': 'Carrera', 'Value': carrera},
-                    {'Name': 'Evento', 'Value': evento},
-                    {'Name': 'TipoModelo', 'Value': tipo_modelo}
-                ]
-            },
-            {
-                'MetricName': 'CalidadPromedio',
-                'Value': validaciones.get('puntuacion_promedio', 0),
-                'Unit': 'None',
-                'Timestamp': datetime.now(),
-                'Dimensions': [
-                    {'Name': 'Carrera', 'Value': carrera},
-                    {'Name': 'Evento', 'Value': evento},
-                    {'Name': 'TipoModelo', 'Value': tipo_modelo}
-                ]
-            },
-            {
-                'MetricName': 'TasaAprobacion',
-                'Value': validaciones.get('tasa_aprobacion', 0) * 100,
-                'Unit': 'Percent',
-                'Timestamp': datetime.now(),
-                'Dimensions': [
-                    {'Name': 'Carrera', 'Value': carrera},
-                    {'Name': 'Evento', 'Value': evento},
-                    {'Name': 'TipoModelo', 'Value': tipo_modelo}
-                ]
-            },
-            {
-                'MetricName': 'CVPromedio',
-                'Value': validaciones.get('cv_promedio', 1.0),
-                'Unit': 'None',
-                'Timestamp': datetime.now(),
-                'Dimensions': [
-                    {'Name': 'Carrera', 'Value': carrera},
-                    {'Name': 'Evento', 'Value': evento},
-                    {'Name': 'TipoModelo', 'Value': tipo_modelo}
-                ]
-            },
-            {
-                'MetricName': 'ModelosAprobados',
-                'Value': metadata.get('modelos_guardados', 0),
-                'Unit': 'Count',
-                'Timestamp': datetime.now(),
-                'Dimensions': [
-                    {'Name': 'Carrera', 'Value': carrera},
-                    {'Name': 'Evento', 'Value': evento},
-                    {'Name': 'TipoModelo', 'Value': tipo_modelo}
-                ]
-            }
-        ]
-        
-        # Si el modelo fue aprobado, publicar métrica adicional
-        if aprobado:
-            metricas.append({
-                'MetricName': 'ModeloAprobado',
-                'Value': 1,
-                'Unit': 'Count',
-                'Timestamp': datetime.now(),
-                'Dimensions': [
-                    {'Name': 'Carrera', 'Value': carrera},
-                    {'Name': 'Evento', 'Value': evento},
-                    {'Name': 'TipoModelo', 'Value': tipo_modelo}
-                ]
-            })
-        
-        cloudwatch.put_metric_data(
-            Namespace='timingsense/ML',
-            MetricData=metricas
-        )
-        print(f"📊 Métricas CloudWatch publicadas para {carrera}/{evento}")
-        
+        cloudwatch.put_metric_data(Namespace='timingsense/Entrenamiento', MetricData=metric_data)
+        print(f"📊 Métrica publicada: {nombre}={valor}")
     except Exception as e:
-        print(f"⚠️ Error publicando métricas a CloudWatch: {e}")
-
-
-# ============================================================
-# HANDLER PRINCIPAL
-# ============================================================
+        print(f"⚠️ Error publicando métrica: {e}")
 
 def lambda_handler(event, context):
-    """
-    Registra las métricas del entrenamiento en SageMaker Experiments
-    SOLO si pasa validación automática.
-    """
-    print("="*60)
-    print("📊 REGISTRANDO EN SAGEMAKER EXPERIMENTS")
-    print("="*60)
+    print("📊 Registrando en SageMaker Experiments")
+    
     print(f"Evento recibido: {json.dumps(event, indent=2)}")
     
-    # Obtener datos del evento
     carrera = event.get('carrera')
-    evento_objetivo = event.get('evento_objetivo')
-    tipo_modelo = event.get('tipo_modelo', 'interpolacion')
     timestamp = event.get('timestamp_unico')
-    model_path = event.get('model_path')
+    dataset_metadata_path = event.get('dataset_metadata_path')  # opcional
+    training_job_name = event.get('training_job_name')
     
-    if not carrera or not evento_objetivo or not timestamp or not model_path:
-        print("❌ Faltan datos para registrar experimento")
-        return {
-            "status": "error", 
-            "message": "Missing data: carrera, evento_objetivo, timestamp_unico or model_path"
-        }
+    # Solo exigimos campos obligatorios
+    if not all([carrera, timestamp, training_job_name]):
+        print("❌ Faltan datos obligatorios para registrar experimento")
+        publicar_metrica('fallo_etapa', 1, 'Count', [
+            {'Name': 'Carrera', 'Value': carrera},
+            {'Name': 'Etapa', 'Value': 'RegistrarExperiments'}
+        ])
+        return {"status": "error", "message": "Missing required fields"}
     
     try:
-        # Leer metadata.json de S3
-        parts = model_path.replace('s3://', '').split('/')
-        bucket = parts[0]
-        key = '/'.join(parts[1:])
+        # Cargar metadata del dataset solo si se proporcionó y es válida
+        dataset_metadata = None
+        if dataset_metadata_path:
+            try:
+                parsed = urlparse(dataset_metadata_path)
+                bucket = parsed.netloc
+                key = parsed.path.lstrip('/')
+                response = s3_client.get_object(Bucket=bucket, Key=key)
+                dataset_metadata = json.loads(response['Body'].read())
+                print(f"✅ Dataset metadata cargada (hash: {dataset_metadata.get('hash_dataset', 'unknown')[:8]})")
+            except Exception as e:
+                print(f"⚠️ No se pudo cargar metadata del dataset desde {dataset_metadata_path}: {e}")
+                dataset_metadata = None
+        else:
+            print("ℹ️ No se proporcionó dataset_metadata_path, se registrará solo información del entrenamiento")
         
-        response = s3_client.get_object(Bucket=bucket, Key=key)
-        metadata = json.loads(response['Body'].read())
+        # Obtener información del training job de SageMaker
+        training_info = sm_client.describe_training_job(TrainingJobName=training_job_name)
+        hyperparams = training_info.get('HyperParameters', {})
         
-        print(f"✅ Metadata cargada de: s3://{bucket}/{key}")
-        print(f"   Modelos guardados: {metadata.get('modelos_guardados', 0)}")
-        print(f"   Calidad promedio: {metadata.get('validaciones', {}).get('puntuacion_promedio', 0)}")
+        # Extraer métricas finales (RMSE, MAE, etc.)
+        metrics = {}
+        for metric in training_info.get('FinalMetricDataList', []):
+            metric_name = metric.get('MetricName')
+            metric_value = metric.get('Value')
+            if metric_name and metric_value is not None:
+                metrics[metric_name] = metric_value
         
-        # =============================================================
-        # VALIDACIÓN ANTES DE EXPERIMENTS
-        # =============================================================
-        aprobado = validar_modelo(metadata, carrera, evento_objetivo, tipo_modelo)
+        print(f"✅ Métricas del entrenamiento: {metrics}")
         
-        # Publicar métricas a CloudWatch (siempre, para monitorización)
-        publicar_metricas_cloudwatch(carrera, evento_objetivo, tipo_modelo, metadata, aprobado)
+        # Crear o recuperar experimento en SageMaker
+        experiment_name = f"timingsense-{carrera.replace(' ', '_').replace('-', '_')}"
+        run_name = f"{carrera.replace(' ', '_')}-{timestamp}"
         
-        if not aprobado:
-            return {
-                "status": "rejected",
-                "message": f"Entrenamiento {carrera}/{evento_objetivo} ({tipo_modelo}) rechazado por calidad insuficiente",
-                "metricas": {
-                    "calidad_promedio": metadata.get('validaciones', {}).get('puntuacion_promedio', 0),
-                    "cv_promedio": metadata.get('validaciones', {}).get('cv_promedio', 0),
-                    "tasa_aprobacion": metadata.get('validaciones', {}).get('tasa_aprobacion', 0),
-                    "modelos_guardados": metadata.get('modelos_guardados', 0),
-                    "tipo_modelo": tipo_modelo
-                }
-            }
-        
-        # =============================================================
-        # REGISTRAR EN SAGEMAKER EXPERIMENTS
-        # =============================================================
-        
-        # Nombre del experimento incluye tipo_modelo y evento
-        experiment_name = f"timingsense-{tipo_modelo}-{carrera.replace(' ', '_').replace('-', '_')}_{evento_objetivo.replace(' ', '_')}"
-        run_name = f"{carrera.replace(' ', '_')}_{evento_objetivo.replace(' ', '_')}-{timestamp}"
-        
-        # Crear experimento
         try:
             sm_client.create_experiment(
                 ExperimentName=experiment_name,
-                Description=f"Experiment for {carrera} - {evento_objetivo} ({tipo_modelo})"
+                Description=f"Experiment for {carrera}"
             )
             print(f"✅ Experimento creado: {experiment_name}")
         except sm_client.exceptions.ResourceAlreadyExistsException:
             print(f"ℹ️ Experimento ya existe: {experiment_name}")
         
-        # Crear trial
+        # Crear trial (una ejecución específica)
+        trial_name = run_name
         try:
-            trial_name = run_name
             sm_client.create_trial(
                 TrialName=trial_name,
                 ExperimentName=experiment_name,
-                TrialComponentName=f"{carrera}-{evento_objetivo}-training"
+                TrialComponentName=f"{carrera}-training"
             )
             print(f"✅ Trial creado: {trial_name}")
         except sm_client.exceptions.ResourceAlreadyExistsException:
             print(f"ℹ️ Trial ya existe: {trial_name}")
         
-        # Registrar métricas
+        # Construir artefactos de entrada (dataset_metadata solo si está disponible)
+        input_artifacts = {
+            "hyperparameters": {"Value": json.dumps(hyperparams)}
+        }
+        if dataset_metadata:
+            input_artifacts["dataset_metadata"] = {"Value": dataset_metadata_path}
+        
+        # Parámetros fijos + opcionales
+        parameters = {
+            "carrera": {"StringValue": carrera},
+            "timestamp": {"StringValue": timestamp},
+            "instance_type": {"StringValue": training_info.get('ResourceConfig', {}).get('InstanceType', '')}
+        }
+        if dataset_metadata:
+            parameters["hash_dataset"] = {"StringValue": dataset_metadata.get('hash_dataset', '')}
+            parameters["n_splits"] = {"NumberValue": dataset_metadata.get('splits_originales', 0)}
+            parameters["carreras_usadas"] = {"NumberValue": dataset_metadata.get('carreras_usadas', 0)}
+            parameters["cobertura_total"] = {"NumberValue": dataset_metadata.get('cobertura_total', 0)}
+            parameters["tipo_seleccion"] = {"StringValue": dataset_metadata.get('tipo_seleccion', '')}
+        
+        # Registrar trial component con todas las métricas y artefactos
         sm_client.create_trial_component(
-            TrialComponentName=f"{carrera}-{evento_objetivo}-training",
-            DisplayName=f"Training {carrera} {evento_objetivo} {timestamp}",
-            InputArtifacts={
-                "hyperparameters": {
-                    "Value": json.dumps(metadata.get('hiperparametros', {}))
-                },
-                "tipo_modelo": {
-                    "Value": tipo_modelo
-                }
-            },
+            TrialComponentName=f"{carrera}-training",
+            DisplayName=f"Training {carrera} {timestamp}",
+            InputArtifacts=input_artifacts,
             OutputArtifacts={
-                "metadata": {
-                    "Value": f"s3://{bucket}/{key}"
-                }
+                "model_artifact": {"Value": training_info.get('ModelArtifacts', {}).get('S3ModelArtifacts', '')}
             },
-            Parameters={
-                "carrera": {"StringValue": carrera},
-                "evento": {"StringValue": evento_objetivo},
-                "tipo_modelo": {"StringValue": tipo_modelo},
-                "timestamp": {"StringValue": timestamp},
-                "n_splits": {"NumberValue": len(metadata.get('splits', []))},
-                "n_modelos_guardados": {"NumberValue": metadata.get('modelos_guardados', 0)}
-            },
+            Parameters=parameters,
             Metrics=[
                 {
-                    "MetricName": "tasa_aprobacion",
-                    "Value": metadata.get('validaciones', {}).get('tasa_aprobacion', 0),
+                    "MetricName": name,
+                    "Value": value,
                     "Timestamp": datetime.now()
-                },
-                {
-                    "MetricName": "calidad_promedio",
-                    "Value": metadata.get('validaciones', {}).get('puntuacion_promedio', 0),
-                    "Timestamp": datetime.now()
-                },
-                {
-                    "MetricName": "cv_promedio",
-                    "Value": metadata.get('validaciones', {}).get('cv_promedio', 0),
-                    "Timestamp": datetime.now()
-                },
-                {
-                    "MetricName": "mejora_promedio",
-                    "Value": metadata.get('validaciones', {}).get('mejora_promedio_sobre_naive', 0),
-                    "Timestamp": datetime.now()
-                },
-                {
-                    "MetricName": "modelos_aprobados",
-                    "Value": metadata.get('validaciones', {}).get('aprobados', 0),
-                    "Timestamp": datetime.now()
-                },
-                {
-                    "MetricName": "modelos_rechazados",
-                    "Value": metadata.get('validaciones', {}).get('rechazados', 0),
-                    "Timestamp": datetime.now()
-                }
+                } for name, value in metrics.items()
             ]
         )
         
-        print(f"✅ Trial component registrado para {carrera}/{evento_objetivo}")
+        print(f"✅ Trial component registrado con {len(metrics)} métricas")
         
-        # Enviar notificación de éxito
-        sns_client.publish(
-            TopicArn="arn:aws:sns:eu-north-1:515358862381:timingsense-exito",
-            Subject=f"✅ MODELOS APROBADOS - {carrera}/{evento_objetivo} ({tipo_modelo})",
-            Message=f"""✅ Entrenamiento APROBADO y registrado
-
-Carrera: {carrera}
-Evento: {evento_objetivo}
-Tipo: {tipo_modelo}
-Timestamp: {timestamp}
-
-Métricas:
-- Calidad promedio: {metadata.get('validaciones', {}).get('puntuacion_promedio', 0):.1f}/100
-- Modelos guardados: {metadata.get('modelos_guardados', 0)}
-- Tasa aprobación: {metadata.get('validaciones', {}).get('tasa_aprobacion', 0):.1%}
-
-Registrado en Experiments: {experiment_name}
-"""
-        )
+        # Publicar métrica de éxito
+        publicar_metrica('entrenamiento_exitoso', 1, 'Count', [{'Name': 'Carrera', 'Value': carrera}])
         
         return {
             "status": "success",
             "experiment_name": experiment_name,
             "trial_name": trial_name,
-            "validated": True,
-            "tipo_modelo": tipo_modelo,
-            "carrera": carrera,
-            "evento": evento_objetivo
+            "metrics": metrics
         }
         
     except Exception as e:
         print(f"❌ Error registrando experimento: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        
-        # Enviar alerta de error
-        try:
-            sns_client.publish(
-                TopicArn="arn:aws:sns:eu-north-1:515358862381:timingsense-errores",
-                Subject=f"❌ ERROR REGISTRANDO EXPERIMENTO - {carrera}/{evento_objetivo}",
-                Message=f"""Error registrando experimento en SageMaker Experiments
-
-Carrera: {carrera}
-Evento: {evento_objetivo}
-Tipo: {tipo_modelo}
-Error: {str(e)}
-
-Revisar logs de Lambda para más detalles.
-"""
-            )
-        except:
-            pass
-        
+        publicar_metrica('fallo_etapa', 1, 'Count', [
+            {'Name': 'Carrera', 'Value': carrera},
+            {'Name': 'Etapa', 'Value': 'RegistrarExperiments'}
+        ])
         return {"status": "error", "message": str(e)}

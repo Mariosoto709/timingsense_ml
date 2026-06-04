@@ -5,6 +5,23 @@ import time
 from datetime import datetime
 from collections import defaultdict
 
+cloudwatch = boto3.client('cloudwatch')
+
+def publicar_metrica(nombre, valor, unidad, dimensiones=None):
+    metric_data = [{
+        'MetricName': nombre,
+        'Value': valor,
+        'Unit': unidad,
+        'Timestamp': datetime.utcnow()
+    }]
+    if dimensiones:
+        metric_data[0]['Dimensions'] = dimensiones
+    try:
+        cloudwatch.put_metric_data(Namespace='timingsense/Entrenamiento', MetricData=metric_data)
+        print(f"📊 Métrica publicada: {nombre}={valor}")
+    except Exception as e:
+        print(f"⚠️ Error publicando métrica: {e}")
+
 # ============================================================
 # CONFIGURACIÓN
 # ============================================================
@@ -368,6 +385,25 @@ def guardar_informe_seleccion(carrera_objetivo, evento_objetivo, seleccionadas, 
 # ============================================================
 
 def lambda_handler(event, context):
+    # Función interna para publicar métricas en CloudWatch
+    def publicar_metrica(nombre, valor, unidad, dimensiones=None):
+        import boto3
+        from datetime import datetime
+        cloudwatch = boto3.client('cloudwatch')
+        metric_data = [{
+            'MetricName': nombre,
+            'Value': valor,
+            'Unit': unidad,
+            'Timestamp': datetime.utcnow()
+        }]
+        if dimensiones:
+            metric_data[0]['Dimensions'] = dimensiones
+        try:
+            cloudwatch.put_metric_data(Namespace='timingsense/Entrenamiento', MetricData=metric_data)
+            print(f"📊 Métrica publicada: {nombre}={valor}")
+        except Exception as e:
+            print(f"⚠️ Error publicando métrica: {e}")
+
     print("=" * 60)
     print("🚀 PREPARANDO CONFIGURACIÓN PARA ENTRENAMIENTO")
     print("=" * 60)
@@ -378,6 +414,8 @@ def lambda_handler(event, context):
     # LEER EVENTO DE ENTRADA
     # ============================================================
     carreras_input = event.get('carreras', [])
+    # Obtener nombre de la primera carrera para métricas (si existe)
+    carrera_primera = carreras_input[0].get('carrera') or carreras_input[0].get('nombre', 'desconocida') if carreras_input else 'desconocida'
     
     if not carreras_input:
         raise ValueError("No se especificaron carreras")
@@ -399,229 +437,226 @@ def lambda_handler(event, context):
     print(f"   Máx carreras: {MAX_CARRERAS}")
     print(f"   Margen distancia: {MARGEN_DISTANCIA}m")
     
-    # ============================================================
-    # LISTAR TODAS LAS CARRERAS HISTÓRICAS DISPONIBLES
-    # ============================================================
-    todas_carreras = listar_carreras_disponibles()
-    print(f"\n📂 Total carreras en catálogo: {len(todas_carreras)}")
-    
-    # ============================================================
-    # TIMESTAMP ÚNICO
-    # ============================================================
-    timestamp_unico = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    
-    # ============================================================
-    # PROCESAR CADA (CARRERA, EVENTO) DE FORMA INDEPENDIENTE
-    # ============================================================
-    carreras_config = []
-    
-    for idx, carrera_info in enumerate(carreras_input, 1):
-        carrera_objetivo = carrera_info.get('carrera') or carrera_info.get('nombre')
-        evento_objetivo = carrera_info.get('evento')
-        splits_requeridos = carrera_info.get('splits', [])
-        tipo_modelo = carrera_info.get('tipo_modelo', 'interpolacion')
-        training_params = carrera_info.get('training_params', {})
-        event_id_filter = carrera_info.get('event_id_filter')
-        event_std_filter = carrera_info.get('event_std_filter')
-        
-        print(f"\n{'='*60}")
-        print(f"📌 [{idx}] Procesando: {carrera_objetivo} / {evento_objetivo}")
-        print(f"{'='*60}")
+    try:
+        # ============================================================
+        # LISTAR TODAS LAS CARRERAS HISTÓRICAS DISPONIBLES
+        # ============================================================
+        todas_carreras = listar_carreras_disponibles()
+        print(f"\n📂 Total carreras en catálogo: {len(todas_carreras)}")
         
         # ============================================================
-        # VALIDACIONES
+        # TIMESTAMP ÚNICO
         # ============================================================
-        if not carrera_objetivo:
-            print(f"⚠️ Carrera sin nombre, omitiendo")
-            continue
-        
-        if not evento_objetivo:
-            print(f"⚠️ Evento sin nombre, omitiendo")
-            continue
-        
-        if not splits_requeridos:
-            print(f"⚠️ Sin splits definidos, omitiendo")
-            continue
+        timestamp_unico = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
         
         # ============================================================
-        # PROCESAR SPLITS DEL USUARIO (convertir a distancias)
+        # PROCESAR CADA (CARRERA, EVENTO) DE FORMA INDEPENDIENTE
         # ============================================================
-        puntos_usuario = []
-        splits_normalizados = []
+        carreras_config = []
         
-        print(f"\n📏 Procesando splits del usuario:")
-        for i, split in enumerate(splits_requeridos):
-            if isinstance(split, str):
-                nombre_split = split
-                # Intentar extraer distancia del nombre
-                dist_km = re.search(r'(\d+(?:[.,]\d+)?)', split)
-                if dist_km:
-                    distancia = int(float(dist_km.group(1).replace(',', '.')) * 1000)
-                elif split.lower() in ['finish', 'meta']:
-                    distancia = 42195
+        for idx, carrera_info in enumerate(carreras_input, 1):
+            carrera_objetivo = carrera_info.get('carrera') or carrera_info.get('nombre')
+            evento_objetivo = carrera_info.get('evento')
+            splits_requeridos = carrera_info.get('splits', [])
+            tipo_modelo = carrera_info.get('tipo_modelo', 'interpolacion')
+            training_params = carrera_info.get('training_params', {})
+            event_id_filter = carrera_info.get('event_id_filter')
+            event_std_filter = carrera_info.get('event_std_filter')
+            
+            print(f"\n{'='*60}")
+            print(f"📌 [{idx}] Procesando: {carrera_objetivo} / {evento_objetivo}")
+            print(f"{'='*60}")
+            
+            # ============================================================
+            # VALIDACIONES
+            # ============================================================
+            if not carrera_objetivo:
+                print(f"⚠️ Carrera sin nombre, omitiendo")
+                continue
+            
+            if not evento_objetivo:
+                print(f"⚠️ Evento sin nombre, omitiendo")
+                continue
+            
+            if not splits_requeridos:
+                print(f"⚠️ Sin splits definidos, omitiendo")
+                continue
+            
+            # ============================================================
+            # PROCESAR SPLITS DEL USUARIO (convertir a distancias)
+            # ============================================================
+            puntos_usuario = []
+            splits_normalizados = []
+            
+            print(f"\n📏 Procesando splits del usuario:")
+            for i, split in enumerate(splits_requeridos):
+                if isinstance(split, str):
+                    nombre_split = split
+                    dist_km = re.search(r'(\d+(?:[.,]\d+)?)', split)
+                    if dist_km:
+                        distancia = int(float(dist_km.group(1).replace(',', '.')) * 1000)
+                    elif split.lower() in ['finish', 'meta']:
+                        distancia = 42195
+                    else:
+                        raise ValueError(f"Split '{split}' no se puede convertir a distancia. Usa formato con número o diccionario.")
+                elif isinstance(split, dict):
+                    nombre_split = split.get('nombre')
+                    distancia = split.get('distancia_metros')
+                    if not nombre_split:
+                        raise ValueError(f"El diccionario en posición {i} debe tener clave 'nombre'")
+                    if distancia is None:
+                        raise ValueError(f"El diccionario en posición {i} debe tener clave 'distancia_metros'")
+                    distancia = int(distancia)
                 else:
-                    raise ValueError(f"Split '{split}' no se puede convertir a distancia. Usa formato con número o diccionario.")
+                    raise ValueError(f"Cada split debe ser string o diccionario")
+                
+                puntos_usuario.append(distancia)
+                splits_normalizados.append({
+                    'nombre': nombre_split,
+                    'distancia_metros': distancia
+                })
+                print(f"   {i+1}. '{nombre_split}' → {distancia} m")
             
-            elif isinstance(split, dict):
-                nombre_split = split.get('nombre')
-                distancia = split.get('distancia_metros')
-                if not nombre_split:
-                    raise ValueError(f"El diccionario en posición {i} debe tener clave 'nombre'")
-                if distancia is None:
-                    raise ValueError(f"El diccionario en posición {i} debe tener clave 'distancia_metros'")
-                distancia = int(distancia)
+            # ============================================================
+            # EVALUAR CADA CARRERA HISTÓRICA
+            # ============================================================
+            candidatas = []
             
-            else:
-                raise ValueError(f"Cada split debe ser string o diccionario")
+            print(f"\n🔍 Evaluando {len(todas_carreras)} carreras históricas...")
             
-            puntos_usuario.append(distancia)
-            splits_normalizados.append({
-                'nombre': nombre_split,
-                'distancia_metros': distancia
+            for race_id in todas_carreras:
+                if race_id == carrera_objetivo:
+                    continue
+                
+                mejor_evento_info = obtener_mejor_evento_para_splits(race_id, puntos_usuario)
+                if not mejor_evento_info:
+                    continue
+                
+                if mejor_evento_info['cobertura'] < COBERTURA_MINIMA:
+                    continue
+                
+                variacion = calcular_variacion_splits(puntos_usuario, mejor_evento_info['splits_distancias'])
+                if variacion > VARIACION_MAXIMA:
+                    continue
+                
+                similitud = calcular_similitud_nombre(carrera_objetivo, race_id)
+                
+                candidatas.append({
+                    'race_id': race_id,
+                    'evento': mejor_evento_info['evento'],
+                    'similitud': similitud,
+                    'cobertura': mejor_evento_info['cobertura'],
+                    'puntos_cubiertos': mejor_evento_info['puntos_cubiertos'],
+                    'variacion': variacion,
+                    'splits_evento': mejor_evento_info['splits_nombres'],
+                    'splits_distancias': mejor_evento_info['splits_distancias']
+                })
+                
+                print(f"   📊 {race_id} / {mejor_evento_info['evento']}: "
+                      f"cob={mejor_evento_info['cobertura']:.1%}, var={variacion:.1%}, sim={similitud:.2f}")
+            
+            print(f"\n📊 Carreras candidatas después de filtros: {len(candidatas)}")
+            
+            # ============================================================
+            # SELECCIÓN GREEDY
+            # ============================================================
+            if not candidatas:
+                print(f"❌ No se encontraron carreras candidatas para {carrera_objetivo} / {evento_objetivo}")
+                continue
+            
+            seleccionadas, cobertura_total, puntos_faltantes = seleccionar_carreras_greedy(
+                candidatas, puntos_usuario, MAX_CARRERAS
+            )
+            
+            # ============================================================
+            # GUARDAR INFORME EN S3
+            # ============================================================
+            informe_path = guardar_informe_seleccion(
+                carrera_objetivo=carrera_objetivo,
+                evento_objetivo=evento_objetivo,
+                seleccionadas=seleccionadas,
+                cobertura_total=cobertura_total,
+                puntos_faltantes=puntos_faltantes,
+                splits_objetivo=splits_normalizados,
+                timestamp_unico=timestamp_unico,
+                output_bucket='timingsense-training-data'
+            )
+            
+            print(f"\n📊 Resultado selección:")
+            print(f"   Carreras seleccionadas: {len(seleccionadas)}")
+            print(f"   Cobertura total: {cobertura_total:.1%}")
+            print(f"   Splits faltantes: {puntos_faltantes}")
+            if informe_path:
+                print(f"   📄 Informe: {informe_path}")
+            
+            # ============================================================
+            # PREPARAR CONFIGURACIÓN FINAL PARA EL GLUE JOB
+            # ============================================================
+            carreras_historicas_detalle = []
+            for c in seleccionadas:
+                carreras_historicas_detalle.append({
+                    'race_id': c['race_id'],
+                    'evento': c['evento'],
+                    'cobertura': c['cobertura'],
+                    'similitud': c['similitud'],
+                    'variacion': c['variacion']
+                })
+            
+            tipo_seleccion = 'misma_carrera' if any(c['similitud'] >= UMBRAL_SIMILITUD for c in seleccionadas) else 'fallback'
+            
+            carreras_config.append({
+                'carrera_objetivo': carrera_objetivo,
+                'evento_objetivo': evento_objetivo,
+                'splits': splits_requeridos,
+                'splits_normalizados': splits_normalizados,
+                'puntos_usuario': puntos_usuario,
+                'carreras_historicas_detalle': carreras_historicas_detalle,
+                'tipo_seleccion': tipo_seleccion,
+                'cobertura_total': cobertura_total,
+                'puntos_faltantes': puntos_faltantes,
+                'event_id_filter': event_id_filter,
+                'event_std_filter': event_std_filter,
+                'tipo_modelo': tipo_modelo,
+                'training_params': training_params,
+                'informe_path': informe_path,
+                'timestamp_unico': timestamp_unico,      # ← NUEVO
+                'generated_at': timestamp_unico          # ← NUEVO
             })
-            print(f"   {i+1}. '{nombre_split}' → {distancia} m")
+            
+            print(f"\n✅ {carrera_objetivo} / {evento_objetivo} preparado correctamente")
+            print(f"   Carreras usadas: {[c['race_id'] for c in carreras_historicas_detalle]}")
         
         # ============================================================
-        # EVALUAR CADA CARRERA HISTÓRICA
+        # SALIDA FINAL
         # ============================================================
-        candidatas = []
+        if not carreras_config:
+            raise ValueError("No se pudo preparar ninguna carrera-evento para entrenamiento")
         
-        print(f"\n🔍 Evaluando {len(todas_carreras)} carreras históricas...")
-        
-        for race_id in todas_carreras:
-            if race_id == carrera_objetivo:
-                continue
-            
-            # Buscar el mejor evento en esta carrera que cubra los splits objetivo
-            mejor_evento_info = obtener_mejor_evento_para_splits(race_id, puntos_usuario)
-            
-            if not mejor_evento_info:
-                continue
-            
-            # VERIFICAR COBERTURA MÍNIMA
-            if mejor_evento_info['cobertura'] < COBERTURA_MINIMA:
-                continue
-            
-            # Calcular variación de número de splits
-            variacion = calcular_variacion_splits(puntos_usuario, mejor_evento_info['splits_distancias'])
-            
-            # VERIFICAR VARIACIÓN MÁXIMA
-            if variacion > VARIACION_MAXIMA:
-                continue
-            
-            # Calcular similitud de nombre de la CARRERA (no del evento)
-            similitud = calcular_similitud_nombre(carrera_objetivo, race_id)
-            
-            candidatas.append({
-                'race_id': race_id,
-                'evento': mejor_evento_info['evento'],
-                'similitud': similitud,
-                'cobertura': mejor_evento_info['cobertura'],
-                'puntos_cubiertos': mejor_evento_info['puntos_cubiertos'],
-                'variacion': variacion,
-                'splits_evento': mejor_evento_info['splits_nombres'],
-                'splits_distancias': mejor_evento_info['splits_distancias']
-            })
-            
-            print(f"   📊 {race_id} / {mejor_evento_info['evento']}: "
-                  f"cob={mejor_evento_info['cobertura']:.1%}, var={variacion:.1%}, sim={similitud:.2f}")
-        
-        print(f"\n📊 Carreras candidatas después de filtros: {len(candidatas)}")
-        
-        # ============================================================
-        # SELECCIÓN GREEDY
-        # ============================================================
-        if not candidatas:
-            print(f"❌ No se encontraron carreras candidatas para {carrera_objetivo} / {evento_objetivo}")
-            continue
-        
-        seleccionadas, cobertura_total, puntos_faltantes = seleccionar_carreras_greedy(
-            candidatas, puntos_usuario, MAX_CARRERAS
-        )
-        
-        # ============================================================
-        # GUARDAR INFORME EN S3
-        # ============================================================
-        informe_path = guardar_informe_seleccion(
-            carrera_objetivo=carrera_objetivo,
-            evento_objetivo=evento_objetivo,
-            seleccionadas=seleccionadas,
-            cobertura_total=cobertura_total,
-            puntos_faltantes=puntos_faltantes,
-            splits_objetivo=splits_normalizados,
-            timestamp_unico=timestamp_unico,
-            output_bucket='timingsense-training-data'
-        )
-        
-        print(f"\n📊 Resultado selección:")
-        print(f"   Carreras seleccionadas: {len(seleccionadas)}")
-        print(f"   Cobertura total: {cobertura_total:.1%}")
-        print(f"   Splits faltantes: {puntos_faltantes}")
-        if informe_path:
-            print(f"   📄 Informe: {informe_path}")
-        
-        # ============================================================
-        # PREPARAR CONFIGURACIÓN FINAL PARA EL GLUE JOB
-        # ============================================================
-        carreras_historicas_detalle = []
-        for c in seleccionadas:
-            carreras_historicas_detalle.append({
-                'race_id': c['race_id'],
-                'evento': c['evento'],
-                'cobertura': c['cobertura'],
-                'similitud': c['similitud'],
-                'variacion': c['variacion']
-            })
-        
-        # Determinar tipo de selección
-        if any(c['similitud'] >= UMBRAL_SIMILITUD for c in seleccionadas):
-            tipo_seleccion = 'misma_carrera'
-        else:
-            tipo_seleccion = 'fallback'
-        
-        carreras_config.append({
-            'carrera_objetivo': carrera_objetivo,
-            'evento_objetivo': evento_objetivo,
-            'splits': splits_requeridos,
-            'splits_normalizados': splits_normalizados,
-            'puntos_usuario': puntos_usuario,
-            'carreras_historicas_detalle': carreras_historicas_detalle,
-            'tipo_seleccion': tipo_seleccion,
-            'cobertura_total': cobertura_total,
-            'puntos_faltantes': puntos_faltantes,
-            'event_id_filter': event_id_filter,
-            'event_std_filter': event_std_filter,
-            'tipo_modelo': tipo_modelo,
-            'training_params': training_params,
-            'informe_path': informe_path
-        })
-        
-        print(f"\n✅ {carrera_objetivo} / {evento_objetivo} preparado correctamente")
-        print(f"   Carreras usadas: {[c['race_id'] for c in carreras_historicas_detalle]}")
-    
-    # ============================================================
-    # SALIDA FINAL
-    # ============================================================
-    if not carreras_config:
-        raise ValueError("No se pudo preparar ninguna carrera-evento para entrenamiento")
-    
-    salida = {
-        "carreras_config": carreras_config,
-        "num_modelos": len(carreras_config),
-        "generated_at": timestamp_unico,
-        "timestamp_unico": timestamp_unico,
-        "config_usada": {
-            "umbral_similitud": UMBRAL_SIMILITUD,
-            "cobertura_minima": COBERTURA_MINIMA,
-            "variacion_maxima": VARIACION_MAXIMA,
-            "max_carreras": MAX_CARRERAS,
-            "margen_distancia": MARGEN_DISTANCIA
+        salida = {
+            "carreras_config": carreras_config,
+            "num_modelos": len(carreras_config),
+            "generated_at": timestamp_unico,
+            "timestamp_unico": timestamp_unico,
+            "config_usada": {
+                "umbral_similitud": UMBRAL_SIMILITUD,
+                "cobertura_minima": COBERTURA_MINIMA,
+                "variacion_maxima": VARIACION_MAXIMA,
+                "max_carreras": MAX_CARRERAS,
+                "margen_distancia": MARGEN_DISTANCIA
+            }
         }
-    }
+        
+        print("\n" + "=" * 60)
+        print("📤 SALIDA FINAL")
+        print("=" * 60)
+        print(json.dumps(salida, indent=2))
+        
+        return salida
     
-    print("\n" + "=" * 60)
-    print("📤 SALIDA FINAL")
-    print("=" * 60)
-    print(json.dumps(salida, indent=2))
-    
-    return salida
+    except Exception as e:
+        print(f"❌ Error en lambda de preparación: {str(e)}")
+        publicar_metrica('fallo_etapa', 1, 'Count', [
+            {'Name': 'Etapa', 'Value': 'PrepararConfig'},
+            {'Name': 'Carrera', 'Value': carrera_primera}
+        ])
+        raise

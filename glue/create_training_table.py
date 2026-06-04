@@ -128,6 +128,37 @@ def eliminar_path_s3(path):
         continuation_token = response.get('NextContinuationToken')
     
     print(f"   🧹 Eliminado: {path}")
+    
+    
+def crear_tabla_desde_dataset(data_s3_path, table_name, database=DATABASE):
+    """Crea una tabla externa en Athena a partir de los datos Parquet ya escritos"""
+    def _crear():
+        # Obtener esquema de los datos (leer una muestra pequeña)
+        from pyspark.sql import SparkSession
+        spark = SparkSession.builder.getOrCreate()
+        df_sample = spark.read.parquet(data_s3_path).limit(1)
+        
+        # Generar columnas DDL
+        columns = []
+        for field in df_sample.schema.fields:
+            col_name = field.name
+            col_type = field.dataType.simpleString().upper()
+            columns.append(f"{col_name} {col_type}")
+        
+        cols_sql = ",\n    ".join(columns)
+        
+        create_query = f"""
+        CREATE EXTERNAL TABLE IF NOT EXISTS {database}.{table_name} (
+            {cols_sql}
+        )
+        STORED AS PARQUET
+        LOCATION '{data_s3_path}'
+        """
+        
+        execute_athena_query(create_query)
+        return table_name
+    
+    return ejecutar_con_reintento(_crear, f"Crear tabla {table_name}")
 
 
 def guardar_dataset_seguro(df, output_path, spark):
@@ -135,12 +166,10 @@ def guardar_dataset_seguro(df, output_path, spark):
     Guarda un DataFrame con escritura segura:
     1. Temporal
     2. Verificación
-    3. Backup de versión anterior
-    4. Copia a destino
-    5. Verificación final
+    3. Copia a destino
+    4. Verificación final
     """
     temp_path = f"{output_path}.temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    backup_path = f"{output_path}.backup"
     
     print(f"   📝 Escribiendo temporal: {temp_path}")
     
@@ -157,36 +186,33 @@ def guardar_dataset_seguro(df, output_path, spark):
     
     print(f"   ✅ Temporal válido: {temp_count:,} registros")
     
-    # 3. Backup si existe
-    if path_exists_s3(output_path):
-        print(f"   📦 Creando backup: {backup_path}")
-        if path_exists_s3(backup_path):
-            eliminar_path_s3(backup_path)
-        copiar_path_s3(output_path, backup_path)
-    
-    # 4. Copiar a destino
+    # 3. Copiar a destino (sin eliminar primero)
     print(f"   📋 Copiando a destino...")
-    if path_exists_s3(output_path):
-        eliminar_path_s3(output_path)
-    copiar_path_s3(temp_path, output_path)
     
-    # 5. Verificar destino
+    # Leer el temporal y escribir directamente en el destino
+    df.write.mode("overwrite").parquet(output_path)
+    
+    # 4. Verificar destino
     print(f"   🔍 Verificando destino...")
     df_final = spark.read.parquet(output_path)
     final_count = df_final.count()
     
     if final_count != temp_count:
-        # Rollback
-        print(f"   ❌ Conteo不一致! Restaurando backup...")
-        if path_exists_s3(backup_path):
-            eliminar_path_s3(output_path)
-            copiar_path_s3(backup_path, output_path)
         raise Exception(f"Verificación falló: temp={temp_count}, final={final_count}")
     
     print(f"   ✅ Destino verificado: {final_count:,} registros")
     
-    # 6. Limpiar temporal
-    eliminar_path_s3(temp_path)
+    # 5. Limpiar temporal
+    try:
+        from pyspark.sql import SparkSession
+        spark = SparkSession.builder.getOrCreate()
+        # Eliminar usando Hadoop FileSystem
+        hadoop_conf = spark._jsc.hadoopConfiguration()
+        fs = spark._jvm.org.apache.hadoop.fs.FileSystem.get(spark._jvm.java.net.URI(temp_path), hadoop_conf)
+        fs.delete(spark._jvm.org.apache.hadoop.fs.Path(temp_path), True)
+        print(f"   🧹 Temporal eliminado: {temp_path}")
+    except Exception as e:
+        print(f"   ⚠️ No se pudo eliminar temporal: {e}")
     
     return True
 
@@ -535,7 +561,20 @@ def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint
     carrera_objetivo = config["carrera_objetivo"]
     evento_objetivo = config.get("evento_objetivo")
     splits = config["splits"]
+    
+    # ✅ FORZAR NORMALIZACIÓN DE SPLITS (convertir dict a string)
+    splits_normalizados_temp = []
+    for s in splits:
+        if isinstance(s, dict):
+            splits_normalizados_temp.append(s.get('nombre', str(s)))
+        else:
+            splits_normalizados_temp.append(str(s))
+    splits = splits_normalizados_temp  # Reemplazar con strings
+    
     carreras_historicas_detalle = config.get('carreras_historicas_detalle', [])
+    
+    tipo_seleccion = config.get('tipo_seleccion', 'desconocido')
+    cobertura_total = config.get('cobertura_total', 0)
     
     print(f"\n{'='*60}")
     print(f"🏁 Procesando: {carrera_objetivo} / {evento_objetivo}")
@@ -570,7 +609,6 @@ def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint
     
     if dataset_existente:
         print(f"   💾 Dataset ya existe (hash: {hash_dataset[:8]}), reutilizando")
-        
         # Cargar metadata existente
         metadata_path = f"{dataset_existente}metadata.json"
         parsed = urlparse(metadata_path)
@@ -582,6 +620,7 @@ def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint
             "carpeta_modelo": metadata.get('carpeta_modelo'),
             "data_s3_path": metadata.get('data_s3_path'),
             "tabla_generada": metadata.get('tabla_generada'),
+            "hash_dataset": metadata.get('hash_dataset'),  
             "splits": metadata.get('splits', 0),
             "splits_originales": metadata.get('splits_originales', 0),
             "splits_interpolados": metadata.get('splits_interpolados', 0),
@@ -764,8 +803,18 @@ def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint
         "total_registros": total_registros,
         "columnas": df_final.columns
     }
+
+    # ============================================================
+    # CREAR TABLA EN ATHENA (solo para datasets nuevos)
+    # ============================================================
+    table_name = f"training_data_{hash_dataset[:8]}"
+    print(f"   📊 Creando tabla Athena: {table_name}")
+    crear_tabla_desde_dataset(data_s3_path, table_name)
     
-    # Guardar metadata
+    # Guardar el nombre de la tabla en metadata
+    metadata["tabla_generada"] = table_name
+
+    # Guardar metadata (el resto del código igual)
     metadata_s3_path = f"{output_base}/datasets/{hash_dataset}/metadata.json"
     parsed = urlparse(metadata_s3_path)
     s3.put_object(
@@ -781,7 +830,8 @@ def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint
         "carrera": carrera_objetivo,
         "carpeta_modelo": carpeta_modelo,
         "data_s3_path": data_s3_path,
-        "tabla_generada": None,
+        "tabla_generada": table_name,   # ✅ Ahora sí lleva el nombre correcto
+        "hash_dataset": hash_dataset,  # ← NUEVA LÍNEA (ya existe la variable)
         "splits": len(analisis['splits_finales']),
         "splits_originales": len(splits),
         "splits_interpolados": len(analisis['splits_interpolables']),
@@ -797,10 +847,6 @@ def procesar_una_carrera(config, timestamp_unico, output_base, spark, checkpoint
     return resultado
 
 
-# ============================================================
-# MAIN GLUE ENTRYPOINT
-# ============================================================
-
 def main():
     print("=" * 80)
     print("🚀 JOB GLUE - CREAR TABLAS DE ENTRENAMIENTO (VERSIÓN MEJORADA)")
@@ -809,22 +855,49 @@ def main():
     # Leer parámetros
     try:
         args = getResolvedOptions(sys.argv, ["carreras_json", "timestamp_unico", "output_base"])
-        carreras_json = args["carreras_json"]
+        carreras_json_str = args["carreras_json"]
         timestamp_unico = args["timestamp_unico"]
         output_base = args["output_base"]
-    except:
+    except Exception as e1:
         try:
             args = getResolvedOptions(sys.argv, ["carreras_json", "timestamp_unico"])
-            carreras_json = args["carreras_json"]
+            carreras_json_str = args["carreras_json"]
             timestamp_unico = args["timestamp_unico"]
             output_base = S3_ATHENA_OUTPUT
-        except:
-            args = getResolvedOptions(sys.argv, ["carreras_json"])
-            carreras_json = args["carreras_json"]
-            timestamp_unico = datetime.now().strftime("%Y%m%d-%H%M%S")
-            output_base = S3_ATHENA_OUTPUT
+            print(f"⚠️ Usando output_base por defecto: {output_base}")
+        except Exception as e2:
+            try:
+                args = getResolvedOptions(sys.argv, ["carreras_json"])
+                carreras_json_str = args["carreras_json"]
+                timestamp_unico = datetime.now().strftime("%Y%m%d-%H%M%S")
+                output_base = S3_ATHENA_OUTPUT
+                print(f"⚠️ Usando timestamp generado: {timestamp_unico}")
+            except Exception as e3:
+                print(f"❌ Error leyendo argumentos: {e3}")
+                raise
     
-    carreras_config = json.loads(carreras_json)
+    # Parsear carreras_json (es un string JSON)
+    try:
+        carreras_config_raw = json.loads(carreras_json_str)
+    except Exception as e:
+        print(f"❌ Error parseando carreras_json: {e}")
+        raise
+    
+    # Normalizar: si es un dict, convertirlo a lista de un elemento
+    if isinstance(carreras_config_raw, dict):
+        carreras_config = [carreras_config_raw]
+    elif isinstance(carreras_config_raw, list):
+        carreras_config = carreras_config_raw
+    else:
+        print(f"❌ carreras_json no es un dict ni list: {type(carreras_config_raw)}")
+        raise ValueError("Formato inválido para carreras_json")
+    
+    # Asegurar que cada configuración tenga timestamp_unico
+    for config in carreras_config:
+        if 'timestamp_unico' not in config:
+            config['timestamp_unico'] = timestamp_unico
+        if 'generated_at' not in config:
+            config['generated_at'] = timestamp_unico
     
     print(f"📥 Carreras a procesar: {len(carreras_config)}")
     print(f"🕒 Timestamp único: {timestamp_unico}")
@@ -849,8 +922,6 @@ def main():
         print("✅ No hay carreras pendientes")
         checkpoint.finish("SUCCESS")
         checkpoint.cleanup()
-        
-        # Guardar salida
         salida = {"modelos": []}
         print(json.dumps(salida))
         return
@@ -860,7 +931,6 @@ def main():
     errores = []
     
     for carrera in carreras_pendientes:
-        # Encontrar la configuración de esta carrera
         config = next((c for c in carreras_config if c.get('carrera_objetivo') == carrera), None)
         
         if not config:
@@ -891,7 +961,6 @@ def main():
         for e in errores:
             print(f"   - {e['carrera']}: {e['error'][:100]}")
     
-    # Finalizar checkpoint
     if errores:
         checkpoint.finish("PARTIAL")
         print("⚠️ Ejecución parcial - revisa errores")
@@ -900,10 +969,8 @@ def main():
         checkpoint.cleanup()
         print("✅ Ejecución completa exitosa")
     
-    # Salida para Step Functions
     salida = {"modelos": resultados}
     print(json.dumps(salida))
-
 
 if __name__ == "__main__":
     main()
